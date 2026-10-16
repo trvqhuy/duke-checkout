@@ -4,7 +4,10 @@
 function relayIntoMain(sendResponse: (result: unknown) => void, payload: { kind?: string; args?: unknown }) {
   const requestId = crypto.randomUUID();
   const onReply = (event: MessageEvent) => {
-    if (event.source !== window || event.data?.channel !== 'duke' || event.data.requestId !== requestId) return;
+    // Only the MAIN-world reply carries a `result` key: the relay's own
+    // outgoing request also echoes back into this world (the two content
+    // worlds share one window), and it must not satisfy the reply predicate.
+    if (event.source !== window || event.data?.channel !== 'duke' || event.data.requestId !== requestId || !('result' in event.data)) return;
     window.removeEventListener('message', onReply);
     sendResponse(event.data.result);
   };
