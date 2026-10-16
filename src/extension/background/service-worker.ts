@@ -24,6 +24,7 @@ registerKeeper(
   },
   async () => {
     const armed = await getArmed();
+    if (!armed) return { armed: false, authenticated: false, tokenSecondsRemaining: 0 };
     const handle = await adapter.acquirePublic().catch(() => null);
     if (!handle) return { armed: !!armed, authenticated: false, tokenSecondsRemaining: 0 };
     await waitForBridgeReady(handle.tabId).catch(() => undefined);

@@ -7,5 +7,6 @@ describe('keeper decision', () => {
     expect(shouldRefresh({ armed: true, authenticated: true, tokenSecondsRemaining: 400 })).toBe(false);
     expect(shouldRefresh({ armed: false, authenticated: true, tokenSecondsRemaining: 100 })).toBe(false);
     expect(shouldRefresh({ armed: true, authenticated: false, tokenSecondsRemaining: 0 })).toBe(false);
+    expect(shouldRefresh({ armed: true, authenticated: true, tokenSecondsRemaining: -5 })).toBe(true);
   });
 });
