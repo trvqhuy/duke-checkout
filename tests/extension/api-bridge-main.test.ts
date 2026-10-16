@@ -33,6 +33,11 @@ describe('api-bridge main world', () => {
     await handleMessage({ channel: 'duke', requestId: 'x', args: { origin: 'https://api.bigw.com.au', path: '/ping', method: 'GET', publicRequest: true } }, post);
     expect(replies[0]).toMatchObject({ channel: 'duke', requestId: 'x', result: { ok: true, status: 200, data: { hello: 1 } } });
   });
+  it('handleMessage ignores its own reply echoes without args', async () => {
+    const post = vi.fn();
+    await expect(handleMessage({ channel: 'duke', requestId: 'echo', args: undefined as never }, post)).resolves.toBeUndefined();
+    expect(post).not.toHaveBeenCalled();
+  });
   it('scopesForPath maps paths and methods to the required scopes', () => {
     expect(scopesForPath('/profile/v1/me', 'GET')).toEqual(['account:view', 'account:pii:view']);
     expect(scopesForPath('/storefront/v1/payment/saved-cards', 'GET')).toEqual(['payment:view']);

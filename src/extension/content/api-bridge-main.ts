@@ -56,7 +56,7 @@ export async function pageRequest(args: BridgeArgs): Promise<BridgeResult> {
 const CHANNEL = 'duke';
 
 export async function handleMessage(message: { channel: string; requestId: string; kind?: string; args: BridgeArgs & { scopes?: string[] } }, post: (msg: unknown) => void): Promise<void> {
-  if (message?.channel !== CHANNEL) return;
+  if (message?.channel !== CHANNEL || typeof message.requestId !== 'string' || typeof message.args !== 'object' || message.args === null) return;
   const scopes = message.args.publicRequest ? [] : (message.args.scopes ?? ['cart:view']);
   const token = message.args.publicRequest ? undefined : resolveToken(scopes)?.token;
   const result = await pageRequest({ ...message.args, token });
