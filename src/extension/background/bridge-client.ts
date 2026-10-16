@@ -11,14 +11,20 @@ const MESSAGES: Record<string, string> = {
 
 export async function bridgeRequest(sender: Sender, tabId: number, args: unknown, timeoutMs = 30_000): Promise<unknown> {
   let result: { ok: boolean; status: number; data?: unknown; code?: string } | null;
+  // Settle timer: cleared when the race settles (either way), so a won race
+  // does not leave a dangling timer holding the process open.
+  let timeoutReject!: (error: AppError) => void;
+  const timer = setTimeout(() => timeoutReject(new AppError('BRIDGE_NO_RESPONSE', 'The BIG W page bridge did not respond. Reload the BIG W tab.')), timeoutMs);
   try {
     result = await Promise.race([
       sender.sendMessage(tabId, { type: 'bridge.request', args }) as Promise<{ ok: boolean; status: number; data?: unknown; code?: string } | null>,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new AppError('BRIDGE_NO_RESPONSE', 'The BIG W page bridge did not respond. Reload the BIG W tab.')), timeoutMs)),
+      new Promise<never>((_, reject) => { timeoutReject = reject; }),
     ]);
   } catch (error) {
     if (error instanceof AppError) throw error;
     throw new AppError('BRIDGE_NO_RESPONSE', 'The BIG W page bridge did not respond. Reload the BIG W tab.');
+  } finally {
+    clearTimeout(timer);
   }
   if (!result) throw new AppError('BRIDGE_NO_RESPONSE', 'The BIG W page bridge did not respond. Reload the BIG W tab.');
   if (!result.ok) throw new AppError(result.code ?? 'STORE_REQUEST', MESSAGES[result.code ?? ''] ?? `BIG W rejected the request (HTTP ${result.status}). Check the BIG W tab.`, result.status >= 500 ? 502 : 400);
