@@ -8,10 +8,9 @@ const root = dirname(fileURLToPath(import.meta.url));
 
 // Content scripts are classic scripts: an ES module chunk (import/export
 // statements) dies with "Unexpected token 'export'" when the manifest injects
-// it. The two bridge relays therefore ship as standalone IIFE bundles instead
-// of vite's ES chunks; link-scout has no module surface and stays in the
-// main pass.
-const bridgeContentScripts = ['api-bridge-main', 'api-bridge-isolated'];
+// it. Every manifest content script therefore ships as a standalone IIFE
+// bundle built by esbuild instead of vite's ES chunks.
+const bridgeContentScripts = ['api-bridge-main', 'api-bridge-isolated', 'link-scout'];
 
 export default defineConfig({
   publicDir: false,
@@ -22,7 +21,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         background: resolve(root, 'src/extension/background/service-worker.ts'),
-        'link-scout': resolve(root, 'src/extension/content/link-scout.ts'),
         app: resolve(root, 'src/extension/app/app.html'),
       },
       output: {
@@ -46,6 +44,7 @@ export default defineConfig({
           format: 'iife',
           minify: true,
           platform: 'browser',
+          target: ['chrome116'],
           outfile: resolve(root, `dist-extension/content/${script}.js`),
         });
       }

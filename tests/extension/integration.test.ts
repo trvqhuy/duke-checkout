@@ -69,7 +69,11 @@ async function intercept(request: HTTPRequest) {
       body = cart;
     }
     if (request.method() === 'POST' && !path.endsWith('/create')) cart.version++;
-  } else { await request.abort('blockedbyclient', 0); throw new Error(`Unmapped extension-fixture endpoint: ${path}`); }
+  } else {
+    runtimeErrors.push(`Unmapped extension-fixture endpoint: ${path}`);
+    await request.abort('blockedbyclient', 0);
+    throw new Error(`Unmapped extension-fixture endpoint: ${path}`);
+  }
   await request.respond({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(body) }, 0);
 }
 
@@ -113,6 +117,8 @@ beforeAll(async () => {
   // The extension must be able to see the work tab AND its isolated bridge
   // must answer a ping before the flow can run (the unpacked extension can be
   // caught reloading itself shortly after install).
+  let lastProbe: { bigwUrl: string | null; reply: unknown } | null = null;
+  let pong = false;
   for (let attempts = 0; attempts < 40; attempts++) {
     const probe: { bigwUrl: string | null; reply: unknown } = await appPage.evaluate(async () => {
       const bigw = (await chrome.tabs.query({})).find(tab => tab.url?.includes('bigw.com.au'));
@@ -121,9 +127,12 @@ beforeAll(async () => {
         reply: bigw?.id ? await chrome.tabs.sendMessage(bigw.id, { type: 'bridge.ping' }).catch(error => `ERR ${String(error)}`) : 'no bigw tab',
       };
     });
-    if ((probe.reply as { pong?: boolean } | undefined)?.pong) break;
+    lastProbe = probe;
+    pong = (probe.reply as { pong?: boolean } | undefined)?.pong === true;
+    if (pong) break;
     await new Promise(resolve => setTimeout(resolve, 500));
   }
+  if (!pong) throw new Error(`bridge.ping never answered after 40 attempts: ${JSON.stringify(lastProbe)}`);
 }, 90_000);
 
 afterAll(async () => {
@@ -170,7 +179,8 @@ describe('extension stage-1 integration', () => {
     const armed = await appPage.evaluate(async () => (await chrome.storage.session.get(['dukeArmed'])).dukeArmed);
     expect(armed).toMatchObject({ productCode: '6071620', quantity: 1, cartId: 'CT_ext_fixture', level: 'cart-ready' });
 
-    // 6. The work tab served the whole chain in order.
+    // 6. The work tab served the whole chain (presence, not order — endpoint
+    //    ordering is covered by unit tests).
     expect(requestedPaths).toEqual(expect.arrayContaining([
       '/apim/product-price-api/v1/products',
       '/apim/product-price-api/v1/prices/6071620',
