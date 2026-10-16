@@ -41,6 +41,7 @@ export default function App() {
       if (data.profile) setProfile(data.profile);
       setHistory(data.history);
       setArmed(data.armed);
+      if (data.armed?.productUrl && !productUrl) setProductUrl(data.armed.productUrl);
       setReady(true);
     }).catch(failure => { if (!closed) { setError(failure instanceof Error ? failure.message : 'Could not reach the extension background.'); setReady(true); } });
     return () => { closed = true; unsubscribe(); };
