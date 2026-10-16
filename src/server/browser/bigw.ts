@@ -1,6 +1,7 @@
 import type { Page } from 'puppeteer-core';
 import type { Address, ArmedCheckout, CartState, PaymentInput, PreparedCheckout, Profile, ProductInfo, RunRequest, SavedCard, StageReporter, StoreAdapter } from '../../shared/types.ts';
 import { parseProductLink } from '../../shared/validation.ts';
+import { STANDBY_CODES } from '../../shared/armed.ts';
 import { AppError, checkAbort } from '../errors.ts';
 import { BrowserConnection, PREP_ORIGIN } from './connection.ts';
 import { buildProductInfo, parseCartState, record, string } from './bigw-model.ts';
@@ -12,9 +13,6 @@ interface Context { authenticated: boolean; tokenSecondsRemaining: number; cartI
 interface ApiResult { ok: boolean; status: number; data?: unknown; code?: string }
 
 const TOKEN_MIN_SECONDS = 120;
-// Failure codes that mean "the retailer is not accepting this product yet" —
-// the pre-release case. Arming downgrades to a standby instead of failing.
-const STANDBY_CODES = ['UNAVAILABLE', 'STORE_REQUEST', 'REQUEST_NETWORK', 'REQUEST_TIMEOUT', 'CART_INVALID'];
 
 export class BigWAdapter implements StoreAdapter {
   private activePage?: Page;

@@ -2,7 +2,8 @@
 // (src/server/browser/bigw.ts). Same endpoints, bodies, stagger, and product
 // semantics; deliberate deviations forced by the bridge (no live Page):
 // (a) steps are acquire-based — each public step starts a fresh bridge handle
-//     via the acquire() seam instead of this.session()/livePage();
+//     via the acquire() seam instead of this.session()/livePage(); the
+//     RetailerAdapter interface methods are acquire-based, not handle-based;
 // (b) inspect() runs the same store/location resolution, but locationFor()
 //     always resolves the storeId through the stores API (no page-context
 //     storeId is available);
@@ -11,20 +12,20 @@
 // (d) arm()/standbyArm() skip the checkout-page preload warm-up (Stage 2 adds
 //     it via the checkout driver); the STANDBY downgrade notes are unchanged;
 // (e) verify() skips the page-context cartId comparison and only re-invalidates
-//     the cart through the bridge.
+//     the cart through the bridge;
+// (f) no retry logic — bridgeRequest throws immediately; stage 2 revisits
+//     anti-bot recovery (the server request() retries 403s once and transient
+//     GETs twice with backoff).
 // The bridge reads the live token per request, so no session renewal step
 // exists here.
 import { parseProductLink } from '../../../../shared/validation.ts';
+import { STANDBY_CODES } from '../../../../shared/armed.ts';
 import { buildProductInfo, parseCartState, record, string } from '../../../../server/browser/bigw-model.ts';
 import { AppError, checkAbort } from '../../../../server/errors.ts';
 import { bridgeRequest } from '../../../background/bridge-client.ts';
 import { scopesForPath } from '../../../content/api-bridge-main.ts';
 import type { BridgeHandle, RetailerAdapter } from '../types.ts';
 import type { ArmedCheckout, CartState, PreparedCheckout, ProductInfo, Profile, RunRequest, StageReporter } from '../../../../shared/types.ts';
-
-// Failure codes that mean "the retailer is not accepting this product yet" —
-// the pre-release case. Arming downgrades to a standby instead of failing.
-const STANDBY_CODES = ['UNAVAILABLE', 'STORE_REQUEST', 'REQUEST_NETWORK', 'REQUEST_TIMEOUT', 'CART_INVALID'];
 
 interface Location { storeId: string; zone?: string; zoneType?: string }
 
@@ -75,13 +76,16 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     // fulfilment response is authoritative, so give it a short budget and
     // otherwise proceed without it.
     let availability: unknown = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       availability = await Promise.race([
         this.req(handle, `/api/availability/v0/product/${code}?${query}`, 'GET', undefined, 'https://api.bigw.com.au', true),
-        new Promise<null>(resolve => setTimeout(() => resolve(null), 2_000)),
+        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 2_000); }),
       ]);
     } catch (error) {
       if (!(error instanceof AppError) || !['REQUEST_NETWORK', 'REQUEST_TIMEOUT'].includes(error.code)) throw error;
+    } finally {
+      clearTimeout(timer);
     }
     return buildProductInfo(url, products, prices, availability);
   }

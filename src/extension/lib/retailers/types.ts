@@ -9,7 +9,7 @@ export interface BridgeHandle { tabId: number; sender: { sendMessage: (tabId: nu
 // adapter's acquire callback (SW wires acquireWorkTab + waitForBridgeReady),
 // because there is no long-lived Page object to keep around.
 export interface RetailerAdapter {
-  urlPattern: RegExp;
+  readonly urlPattern: RegExp;
   inspect(productUrl: string, profile: Profile): Promise<ProductInfo>;
   prepareCart(input: RunRequest, product: ProductInfo, report: StageReporter, signal: AbortSignal): Promise<PreparedCheckout>;
   arm(input: RunRequest, report: StageReporter, signal: AbortSignal): Promise<ArmedCheckout>;
