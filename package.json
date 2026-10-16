@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "description": "A local, existing-browser BIG W checkout workspace.",
-  "engines": { "node": ">=22.20.0" },
+  "engines": {
+    "node": ">=22.20.0"
+  },
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
     "start": "tsx src/server/index.ts --production",
     "build": "tsc --noEmit && vite build",
-    "build:ext": "vite build -c vite.extension.config.ts",
+    "build:ext": "npm run check && vite build -c vite.extension.config.ts",
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -29,6 +31,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/chrome": "^0.3.5",
     "@types/express": "^5.0.3",
     "@types/node": "^22.18.6",
     "@types/react": "^19.2.0",

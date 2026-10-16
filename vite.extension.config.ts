@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { copyFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, renameSync, rmSync } from 'node:fs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 
@@ -33,10 +33,13 @@ export default defineConfig({
   plugins: [{
     name: 'duke-manifest',
     closeBundle() {
-      mkdirSync('dist-extension/content', { recursive: true });
-      copyFileSync('src/extension/manifest.json', 'dist-extension/manifest.json');
-      renameSync('dist-extension/src/extension/app/app.html', 'dist-extension/app.html');
-      rmSync('dist-extension/src', { recursive: true, force: true });
+      copyFileSync(resolve(root, 'src/extension/manifest.json'), resolve(root, 'dist-extension/manifest.json'));
+      const htmlOut = resolve(root, 'dist-extension/src/extension/app/app.html');
+      if (!existsSync(htmlOut)) {
+        throw new Error('Vite output layout changed: app.html not found at expected path (dist-extension/src/extension/app/app.html)');
+      }
+      renameSync(htmlOut, resolve(root, 'dist-extension/app.html'));
+      rmSync(resolve(root, 'dist-extension/src'), { recursive: true, force: true });
     },
   }],
 });
