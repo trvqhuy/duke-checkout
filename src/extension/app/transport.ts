@@ -1,6 +1,6 @@
-import { decodeResponse, isEvent, type DukeEvent } from '../lib/protocol.ts';
+import { decodeResponse, isEvent, type DukeEvent, type RequestType } from '../lib/protocol.ts';
 
-export async function request<T>(type: string, payload?: unknown): Promise<T> {
+export async function request<T>(type: RequestType, payload?: unknown): Promise<T> {
   const response = await chrome.runtime.sendMessage({ id: crypto.randomUUID(), type, payload: payload ?? null });
   const decoded = decodeResponse(response);
   if (!decoded) throw new Error('Unreadable response from the extension background.');

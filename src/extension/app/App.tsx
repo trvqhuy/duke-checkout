@@ -62,12 +62,15 @@ export default function App() {
     await run('profile', async () => setProfile(await request<Profile>('profile.put', sendProfile())));
   }
   async function inspect() {
-    await run('inspect', async () => setProduct(await request<ProductInfo>('inspect.start', { productUrl, profile: sendProfile() })));
+    if (!productUrl.trim()) return;
+    await run('inspect', async () => setProduct(await request<ProductInfo>('inspect.start', { productUrl: productUrl.trim(), profile: sendProfile() })));
   }
   async function arm() {
     if (!settings) return;
+    if (!budgetValid) { setError('Enter a delivered budget between $0.01 and $50,000.'); return; }
+    if (!productUrl.trim()) return;
     await run('arm', async () => setArmed(await request<ArmedCheckout>('arm.start', {
-      productUrl, quantity: settings.quantity,
+      productUrl: productUrl.trim(), quantity: settings.quantity,
       maxTotalCents: Math.round(Number(settings.maxTotalAUD) * 100),
       mode: settings.mode, profile: sendProfile(),
     })));
@@ -76,7 +79,17 @@ export default function App() {
     await run('clear', async () => { await request('arm.clear'); setArmed(null); });
   }
 
-  const stale = !!armed && (armed.productUrl !== productUrl.trim() || armed.quantity !== settings?.quantity);
+  const profileStale = !!armed && (() => {
+    const a = armed.profile;
+    const sent = sendProfile();
+    return a.name !== sent.name || a.firstName !== sent.firstName || a.lastName !== sent.lastName
+      || a.phone !== sent.phone || a.billingSame !== sent.billingSame
+      || JSON.stringify(a.deliveryAddress) !== JSON.stringify(sent.deliveryAddress)
+      || JSON.stringify(a.billingAddress ?? null) !== JSON.stringify(sent.billingAddress ?? null);
+  })();
+  const stale = !!armed && (armed.productUrl !== productUrl.trim() || armed.quantity !== settings?.quantity || profileStale);
+  const maxTotal = settings?.maxTotalAUD ?? '';
+  const budgetValid = /^\d{1,5}(\.\d{1,2})?$/.test(maxTotal) && Number(maxTotal) > 0;
   const update = (patch: Partial<DukeSettings>) => setSettings(current => (current ? { ...current, ...patch } : current));
   const disabled = !!busy || !ready;
 
@@ -118,7 +131,7 @@ export default function App() {
               : 'Buying at a release moment? Arm the checkout now so the session, product, and page are prepared early.'}</span>
             {armed
               ? <button type="button" className="text-button" onClick={clearArm} disabled={disabled}>Clear</button>
-              : <button type="button" className="secondary-button compact" onClick={arm} disabled={disabled || !productUrl}>{busy === 'arm' ? 'Arming…' : 'Arm checkout'}</button>}
+              : <button type="button" className="secondary-button compact" onClick={arm} disabled={disabled || !productUrl.trim() || !budgetValid}>{busy === 'arm' ? 'Arming…' : 'Arm checkout'}</button>}
           </div>
         </section>
         <section className="form-section">
