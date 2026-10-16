@@ -36,6 +36,31 @@ export function scopesForPath(path: string, method?: string): string[] {
   return method === 'POST' ? ['cart:manage'] : ['cart:view'];
 }
 
+// Direct port of PAGE_CONTEXT (src/server/browser/page-api.ts). Same reads and
+// decode-in-try/catch semantics; resolveToken() is this file's own version.
+export function pageContext(): {
+  authenticated: boolean;
+  tokenSecondsRemaining: number;
+  cartId: string | null;
+  storeId: unknown;
+  delivery: unknown;
+} {
+  const cached = resolveToken(['cart:view']);
+  let cartId: unknown = null;
+  try { cartId = JSON.parse(localStorage.getItem('bigw:state-cartId') ?? 'null'); } catch { /* fall through with the default */ }
+  const cookie = (name: string): unknown => {
+    const value = (document.cookie || '').split('; ').find(part => part.startsWith(`${name}=`));
+    try { return value ? JSON.parse(decodeURIComponent(value.slice(name.length + 1))) : null; } catch { return null; }
+  };
+  return {
+    authenticated: !!cached?.token,
+    tokenSecondsRemaining: cached?.expiresAt ? Math.floor(cached.expiresAt - Date.now() / 1000) : 0,
+    cartId: typeof cartId === 'string' ? cartId : null,
+    storeId: cookie('bigw_location-store'),
+    delivery: cookie('bigw_location-delivery'),
+  };
+}
+
 export interface BridgeArgs { origin: string; path: string; method?: string; body?: unknown; publicRequest?: boolean; token?: string; timeoutMs?: number }
 
 export type BridgeResult = { ok: boolean; status: number; data?: unknown; code?: string };
@@ -64,8 +89,13 @@ export async function pageRequest(args: BridgeArgs): Promise<BridgeResult> {
 
 const CHANNEL = 'duke';
 
-export async function handleMessage(message: { channel: string; requestId: string; kind?: string; args: BridgeArgs & { scopes?: string[] } }, post: (msg: unknown) => void): Promise<void> {
-  if (message?.channel !== CHANNEL || typeof message.requestId !== 'string' || typeof message.args !== 'object' || message.args === null) return;
+export async function handleMessage(message: { channel: string; requestId: string; kind?: string; args?: BridgeArgs & { scopes?: string[] } }, post: (msg: unknown) => void): Promise<void> {
+  if (message?.channel !== CHANNEL || typeof message.requestId !== 'string') return;
+  if (message.kind === 'context') {
+    post({ channel: CHANNEL, requestId: message.requestId, result: pageContext() });
+    return;
+  }
+  if (typeof message.args !== 'object' || message.args === null) return;
   const scopes = message.args.publicRequest ? [] : (message.args.scopes ?? ['cart:view']);
   const token = message.args.publicRequest ? undefined : resolveToken(scopes)?.token;
   const result = await pageRequest({ ...message.args, token });

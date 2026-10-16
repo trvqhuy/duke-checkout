@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { resolveToken, pageRequest, handleMessage, scopesForPath } from '../../src/extension/content/api-bridge-main.ts';
+import { resolveToken, pageRequest, pageContext, handleMessage, scopesForPath } from '../../src/extension/content/api-bridge-main.ts';
 
 const localStorageStub = (data: Record<string, string>) => {
   const store = new Map(Object.entries(data));
@@ -52,6 +52,50 @@ describe('api-bridge main world', () => {
     await pageRequest({ origin: 'https://api.bigw.com.au', path: '/profile/v1/me', method: 'GET', publicRequest: false, token: 't' });
     await pageRequest({ origin: 'https://api.bigw.com.au', path: '/storefront/v1/cart', method: 'GET', publicRequest: false, token: 't' });
     expect(seen).toEqual([['accept', 'authorization'], ['accept', 'authorization3']]);
+  });
+  it('pageContext ports PAGE_CONTEXT: auth state, expiry, cartId, store, delivery', () => {
+    const now = 1_700_000_000_000;
+    vi.useFakeTimers({ now });
+    try {
+      localStorageStub({
+        '@@auth0spajs@@::client1::https://api.bigw.com.au/api::openid profile cart:view': JSON.stringify({
+          expiresAt: now / 1000 + 95, body: { access_token: 'tok1', client_id: 'client1', scope: 'openid profile cart:view' },
+        }),
+        'bigw:state-cartId': JSON.stringify('CT_123'),
+      });
+      vi.stubGlobal('document', {
+        cookie: [
+          'auth0.client1.is.authenticated=1',
+          `bigw_location-store=${encodeURIComponent(JSON.stringify('S_10'))}`,
+          `bigw_location-delivery=${encodeURIComponent(JSON.stringify({ postcode: '2000' }))}`,
+        ].join('; '),
+      });
+      const context = pageContext();
+      expect(context.authenticated).toBe(true);
+      expect(context.tokenSecondsRemaining).toBe(95);
+      expect(context.cartId).toBe('CT_123');
+      expect(context.storeId).toBe('S_10');
+      expect(context.delivery).toEqual({ postcode: '2000' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('pageContext reports anonymous state and tolerates malformed cookies and cart ids', () => {
+    vi.stubGlobal('document', { cookie: 'bigw_location-store=%7Bbroken' });
+    localStorageStub({ 'bigw:state-cartId': 'not-json' });
+    const context = pageContext();
+    expect(context).toEqual({ authenticated: false, tokenSecondsRemaining: 0, cartId: null, storeId: null, delivery: null });
+  });
+  it('handleMessage answers kind:context without touching args or fetch', async () => {
+    vi.stubGlobal('document', { cookie: '' });
+    localStorageStub({});
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const replies: unknown[] = [];
+    const post = vi.fn((msg: unknown) => replies.push(msg));
+    await handleMessage({ channel: 'duke', requestId: 'ctx', kind: 'context', args: null as never }, post);
+    expect(replies[0]).toMatchObject({ channel: 'duke', requestId: 'ctx', result: { authenticated: false, tokenSecondsRemaining: 0 } });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
   it('scopesForPath maps paths and methods to the required scopes', () => {
     expect(scopesForPath('/profile/v1/me', 'GET')).toEqual(['account:view', 'account:pii:view']);
