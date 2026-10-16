@@ -29,4 +29,13 @@ describe('settings storage', () => {
     await expect(putSettings({ quantity: 0 })).rejects.toThrow();
     await expect(putSettings({ maxTotalAUD: '-5' })).rejects.toThrow();
   });
+  it('falls back to defaults when stored settings are corrupt', async () => {
+    mem.dukeSettings = 'garbage';
+    expect(await getSettings()).toEqual(DEFAULT_SETTINGS);
+  });
+  it('accepts boundary values', async () => {
+    await expect(putSettings({ quantity: 20, maxTotalAUD: '50000' })).resolves.toBeDefined();
+    await expect(putSettings({ quantity: 21 })).rejects.toThrow();
+    await expect(putSettings({ maxTotalAUD: '99999.99' })).rejects.toThrow();
+  });
 });
