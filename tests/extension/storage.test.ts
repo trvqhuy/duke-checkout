@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getSettings, putSettings, DEFAULT_SETTINGS, type DukeSettings } from '../../src/extension/lib/storage.ts';
+import { getSettings, putSettings, DEFAULT_SETTINGS, getProfile, putProfile, getHistory, pushRun, type DukeSettings, type DukeProfileRecord } from '../../src/extension/lib/storage.ts';
 
 const mem: Record<string, unknown> = {};
 const chromeStub = { storage: { local: {
@@ -30,12 +30,28 @@ describe('settings storage', () => {
     await expect(putSettings({ maxTotalAUD: '-5' })).rejects.toThrow();
   });
   it('falls back to defaults when stored settings are corrupt', async () => {
-    mem.dukeSettings = 'garbage';
+    mem.dukeSettings = { quantity: 999 };
     expect(await getSettings()).toEqual(DEFAULT_SETTINGS);
   });
   it('accepts boundary values', async () => {
     await expect(putSettings({ quantity: 20, maxTotalAUD: '50000' })).resolves.toBeDefined();
     await expect(putSettings({ quantity: 21 })).rejects.toThrow();
     await expect(putSettings({ maxTotalAUD: '99999.99' })).rejects.toThrow();
+  });
+});
+
+describe('profile + history storage', () => {
+  beforeEach(() => { for (const k of Object.keys(mem)) delete mem[k]; });
+  it('stores and returns the profile', async () => {
+    const profile: DukeProfileRecord = { name: 'Home', firstName: 'A', lastName: 'B', phone: '0412345678',
+      deliveryAddress: { line1: '1 St', line2: '', suburb: 'Clayton', postcode: '3168', state: 'VIC', country: 'AU' }, billingSame: true };
+    await putProfile(profile);
+    expect(await getProfile()).toEqual(profile);
+  });
+  it('run history is capped at 100 newest-first', async () => {
+    for (let i = 0; i < 105; i++) await pushRun({ id: `run-${i}`, status: 'failed' });
+    const history = await getHistory();
+    expect(history).toHaveLength(100);
+    expect(history[0].id).toBe('run-104');
   });
 });

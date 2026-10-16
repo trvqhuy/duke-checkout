@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Profile } from '../../shared/types.ts';
 
 const settingsSchema = z.object({
   quantity: z.number().int({ message: 'Quantity must be a whole number between 1 and 20.' }).min(1, { message: 'Quantity must be a whole number between 1 and 20.' }).max(20, { message: 'Quantity must be a whole number between 1 and 20.' }),
@@ -32,4 +33,20 @@ export async function putSettings(patch: Partial<DukeSettings>): Promise<DukeSet
   const next = settingsSchema.parse({ ...(await getSettings()), ...patch });
   await localSet(SETTINGS_KEY, next);
   return next;
+}
+
+export type DukeProfileRecord = Profile;
+
+const PROFILE_KEY = 'dukeProfile';
+const HISTORY_KEY = 'dukeHistory';
+const HISTORY_CAP = 100;
+
+export async function getProfile(): Promise<Profile | null> { return (await localGet<Profile>(PROFILE_KEY)) ?? null; }
+export async function putProfile(profile: Profile): Promise<Profile> { await localSet(PROFILE_KEY, profile); return profile; }
+
+export interface HistoryEntry { id: string; status: string; [key: string]: unknown }
+export async function getHistory(): Promise<HistoryEntry[]> { return (await localGet<HistoryEntry[]>(HISTORY_KEY)) ?? []; }
+export async function pushRun(run: HistoryEntry): Promise<void> {
+  const history = [run, ...(await getHistory())].slice(0, HISTORY_CAP);
+  await localSet(HISTORY_KEY, history);
 }
