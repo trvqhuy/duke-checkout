@@ -1,3 +1,12 @@
+// MAIN-world bridge for bigw.com.au pages, adapted from the server original
+// (src/server/browser/page-api.ts request()). Three deliberate deviations:
+// (a) the token is resolved here via resolveToken(); any caller-supplied token
+//     is ignored so credentials never cross worlds;
+// (b) the server's SESSION_EXPIRED pre-check (expiresAt < now + 15s) is
+//     dropped — expired tokens simply get rejected by BIG W as 401, which
+//     maps to LOGIN_REQUIRED;
+// (c) localStorage is enumerated via key(i)/length (works identically under
+//     the injected-world sandbox and in tests without DOM stubs).
 export function resolveToken(requiredScopes: string[]): { token: string; expiresAt: number; scopes: string[] } | null {
   let clientHint: string | null = null;
   const authCookies = (document.cookie || '').split('; ').filter(v => /^auth0\.[^.]+\.is\.authenticated=/.test(v));

@@ -38,6 +38,21 @@ describe('api-bridge main world', () => {
     await expect(handleMessage({ channel: 'duke', requestId: 'echo', args: undefined as never }, post)).resolves.toBeUndefined();
     expect(post).not.toHaveBeenCalled();
   });
+  it('pageRequest rejects unknown origins and malformed paths with REQUEST_ORIGIN', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    expect(await pageRequest({ origin: 'https://evil.example', path: '/x', publicRequest: true })).toEqual({ ok: false, status: 0, code: 'REQUEST_ORIGIN' });
+    expect(await pageRequest({ origin: 'https://api.bigw.com.au', path: 'storefront/v1/cart', publicRequest: true })).toEqual({ ok: false, status: 0, code: 'REQUEST_ORIGIN' });
+    expect(await pageRequest({ origin: 'https://api.bigw.com.au', path: '//evil.example/x', publicRequest: true })).toEqual({ ok: false, status: 0, code: 'REQUEST_ORIGIN' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+  it('pageRequest picks authorization for /profile/ paths and authorization3 otherwise', async () => {
+    const seen: string[][] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { headers: Record<string, string> }) => { seen.push(Object.keys(init.headers)); return Response.json({}); }));
+    await pageRequest({ origin: 'https://api.bigw.com.au', path: '/profile/v1/me', method: 'GET', publicRequest: false, token: 't' });
+    await pageRequest({ origin: 'https://api.bigw.com.au', path: '/storefront/v1/cart', method: 'GET', publicRequest: false, token: 't' });
+    expect(seen).toEqual([['accept', 'authorization'], ['accept', 'authorization3']]);
+  });
   it('scopesForPath maps paths and methods to the required scopes', () => {
     expect(scopesForPath('/profile/v1/me', 'GET')).toEqual(['account:view', 'account:pii:view']);
     expect(scopesForPath('/storefront/v1/payment/saved-cards', 'GET')).toEqual(['payment:view']);
