@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Duke Checkout",
+  "version": "0.1.0",
+  "description": "Prepared, guarded BIG W checkout. Local execution only.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "alarms", "tabs", "contextMenus", "notifications"],
+  "host_permissions": [
+    "https://www.bigw.com.au/*",
+    "https://api.bigw.com.au/*",
+    "https://apix.bigw.com.au/*",
+    "https://secure-fields.wpay2.gr4vy.app/*",
+    "https://portal.afterpay.com/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Duke Checkout", "default_popup": "app.html?popup=1" },
+  "options_page": "app.html",
+  "content_scripts": [
+    { "matches": ["https://www.bigw.com.au/*"], "js": ["content/api-bridge-main.js"], "run_at": "document_start", "world": "MAIN" },
+    { "matches": ["https://www.bigw.com.au/*"], "js": ["content/api-bridge-isolated.js"], "run_at": "document_start", "world": "ISOLATED" },
+    { "matches": ["<all_urls>"], "js": ["content/link-scout.js"], "run_at": "document_idle" }
+  ]
+}

@@ -9,6 +9,7 @@
     "dev": "tsx watch src/server/index.ts",
     "start": "tsx src/server/index.ts --production",
     "build": "tsc --noEmit && vite build",
+    "build:ext": "vite build -c vite.extension.config.ts",
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

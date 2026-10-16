@@ -5,3 +5,6 @@ data/
 *.log
 coverage/
 .DS_Store
+dist-extension/
+*.crx
+*.pem
