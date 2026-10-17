@@ -4,6 +4,7 @@ data/
 .env
 *.log
 coverage/
+.serena/
 .DS_Store
 dist-extension/
 *.crx
