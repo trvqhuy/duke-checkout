@@ -3,12 +3,15 @@
 // The run lifecycle, guards, events, and messages are ported verbatim. The only
 // deliberate deviations, forced by the extension runtime, are:
 //
-// 1. Storage. Run history lives in the extension store (getHistory/pushRun in
-//    ../lib/storage.ts) instead of the server's LocalStore, and every run is
-//    run through the shared sanitizeRun before it is broadcast or persisted, so
-//    the CheckoutRun objects kept in history are the sanitized shape and no card
-//    material can reach storage. lib/storage.pushRun upserts by run id, so the
-//    server's whole-snapshot rewrite becomes a per-run history update.
+// 1. Storage. Run history lives in the extension store (getHistory/saveRuns in
+//    ../lib/storage.ts) instead of the server's LocalStore. saveRuns mirrors the
+//    server: the shared retainRunHistory caps harmless preparation history while
+//    keeping every purchase and unknown-outcome record, then every run is run
+//    through the shared sanitizeRun, so no card material can reach storage and
+//    the store is rewritten as a single retained snapshot. persist() applies the
+//    same retention to the in-memory runs, so memory and the store hold the same
+//    set. A harmless prepare run trimmed from that cap therefore disappears from
+//    both, and get()/wait() on it surface NOT_FOUND rather than a stale record.
 // 2. Active-run recovery. The in-memory runs[] + active mirror the server, and
 //    the active run is additionally mirrored into chrome.storage.session under
 //    dukeRunState ({ run }) on every change (persistState), so a restarted
@@ -28,9 +31,10 @@ import type { ArmedCheckout, CartState, CheckoutRun, PaymentInput, PaymentOutcom
 import { parseProductLink, validateRun } from '../../shared/validation.ts';
 import { guardCart } from '../../shared/cart-guard.ts';
 import { sanitizeRun } from '../../shared/run-sanitize.ts';
+import { retainRunHistory } from '../../shared/history.ts';
 import { armedMatches } from '../../shared/armed.ts';
 import { AppError, checkAbort, publicError } from '../../server/errors.ts';
-import { getHistory, pushRun } from '../lib/storage.ts';
+import { getHistory, saveRuns } from '../lib/storage.ts';
 
 // Exactly the adapter surface this manager uses, so tests can pass a fake.
 export interface RunAdapter {
@@ -97,14 +101,8 @@ export class RunManager {
   }
 
   private async persist(): Promise<void> {
-    // History is keyed by run id; only write runs whose sanitized form differs
-    // from what is already stored (oldest-first so the newest stays first).
-    const known = new Map((await getHistory()).map(item => [item.id, JSON.stringify(item)]));
-    for (const run of [...this.runs].reverse()) {
-      const value = sanitizeRun(run);
-      if (known.get(value.id) === JSON.stringify(value)) continue;
-      await pushRun({ ...value });
-    }
+    this.runs = retainRunHistory(this.runs);
+    await saveRuns(this.runs);
   }
   private persistState(): void {
     const run = this.active ? this.runs.find(item => item.id === this.active!.id) : undefined;

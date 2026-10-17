@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { RunManager, type RunAdapter } from '../../src/extension/background/run-manager.ts';
 import { AppError } from '../../src/server/errors.ts';
 import { validateRun } from '../../src/shared/validation.ts';
-import type { ArmedCheckout, CartState, PaymentOutcome, PreparedCheckout, ProductInfo } from '../../src/shared/types.ts';
+import type { ArmedCheckout, CartState, CheckoutRun, PaymentOutcome, PreparedCheckout, ProductInfo } from '../../src/shared/types.ts';
+import { getHistory } from '../../src/extension/lib/storage.ts';
 import { productUrl, runInput, testCard } from '../fixtures.ts';
 
 const mem: Record<string, unknown> = {};
@@ -234,5 +235,86 @@ describe('extension RunManager', () => {
     expect(restarted.history()[0].id).toBe('session-only');
     expect(restarted.history()[0].status).toBe('payment_unknown');
     expect(sessionMem.dukeRunState).toBeUndefined();
+  });
+
+  it('retains protected runs and caps preparation history when persist rewrites the store', async () => {
+    const base = Date.now() - 1_000_000;
+    const prep = (i: number): CheckoutRun => ({
+      id: `seed-${i}`, requestId: `seed-${i}`, mode: 'prepare', status: 'ready', stage: 'complete',
+      productCode: '6071620', productUrl, quantity: 1, maxTotalCents: 2500, profileName: 'Home delivery',
+      startedAt: new Date(base - i * 1000).toISOString(), updatedAt: new Date(base - i * 1000).toISOString(),
+      finishedAt: new Date(base - i * 1000).toISOString(), elapsedMs: 0, events: [],
+    });
+    mem.dukeHistory = [
+      { ...prep(0), id: 'seed-purchase', requestId: 'seed-purchase', mode: 'purchase', status: 'succeeded', startedAt: new Date(base + 2000).toISOString(), updatedAt: new Date(base + 2000).toISOString() },
+      { ...prep(0), id: 'seed-unknown', requestId: 'seed-unknown', mode: 'purchase', status: 'payment_unknown', startedAt: new Date(base + 1000).toISOString(), updatedAt: new Date(base + 1000).toISOString() },
+      ...Array.from({ length: 100 }, (_, i) => prep(i)),
+    ];
+    const { manager } = await setup();
+    const done = await manager.wait((await manager.start(runInput)).id);
+    const stored = mem.dukeHistory as CheckoutRun[];
+    expect(stored.length).toBeLessThanOrEqual(102);
+    expect(stored.some(run => run.id === 'seed-purchase')).toBe(true);
+    expect(stored.some(run => run.id === 'seed-unknown')).toBe(true);
+    expect(stored[0].id).toBe(done.id);
+    const times = stored.map(run => Date.parse(run.startedAt));
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+  });
+
+  it('stores exactly one history entry per run id', async () => {
+    const { manager } = await setup();
+    const done = await manager.wait((await manager.start({ ...runInput, mode: 'purchase', card: testCard })).id);
+    const stored = await getHistory();
+    expect(stored.filter(run => run.id === done.id)).toHaveLength(1);
+  });
+
+  it('resolves an unknown outcome, rejecting bad references and non-unknown runs', async () => {
+    const { manager, adapter } = await setup();
+    adapter.pay = async (): Promise<PaymentOutcome> => ({ status: 'unknown', message: 'Outcome not confirmed.' });
+    const unknownRun = await manager.wait((await manager.start({ ...runInput, mode: 'purchase', card: testCard })).id);
+    expect(unknownRun.status).toBe('payment_unknown');
+    await expect(manager.resolve(unknownRun.id, 'confirmed', 'x')).rejects.toThrow(/order reference/i);
+    const resolved = await manager.resolve(unknownRun.id, 'confirmed', 'BW-OK-123');
+    expect(resolved.status).toBe('succeeded');
+    expect(resolved.orderNumber).toBe('BW-OK-123');
+    await expect(manager.resolve(unknownRun.id, 'not_purchased')).rejects.toThrow(/unknown payment outcome/i);
+
+    const second = await manager.wait((await manager.start({ ...runInput, mode: 'purchase', card: testCard })).id);
+    await manager.resolve(second.id, 'not_purchased');
+    expect(manager.get(second.id).status).toBe('failed');
+    expect(manager.get(second.id).error?.code).toBe('OUTCOME_CHECKED');
+  });
+
+  it('refuses to cancel after payment submission', async () => {
+    const { manager, adapter } = await setup();
+    let release!: (outcome: PaymentOutcome) => void;
+    let submitted!: () => void;
+    const submittedGate = new Promise<void>(resolve => { submitted = resolve; });
+    adapter.pay = () => { submitted(); return new Promise<PaymentOutcome>(resolve => { release = resolve; }); };
+    const run = await manager.start({ ...runInput, mode: 'purchase', card: testCard });
+    await submittedGate;
+    expect(() => manager.cancel(run.id)).toThrow(/already being submitted/i);
+    release({ status: 'confirmed', orderNumber: 'BW-EXAMPLE-100' });
+    expect((await manager.wait(run.id)).status).toBe('succeeded');
+  });
+
+  it('clears the active session mirror after a normal finish', async () => {
+    const { manager } = await setup();
+    const done = await manager.wait((await manager.start(runInput)).id);
+    expect(done.status).toBe('ready');
+    expect(sessionMem.dukeRunState).toBeNull();
+  });
+
+  it('recovers a run present in both history and session exactly once', async () => {
+    const record = runRecord({ id: 'dup-run', paymentSubmittedAt: new Date().toISOString() });
+    mem.dukeHistory = [record];
+    sessionMem.dukeRunState = { run: record };
+    const { adapter } = makeAdapter();
+    const restarted = new RunManager(adapter);
+    await restarted.init();
+    const matches = restarted.history().filter(run => run.id === 'dup-run');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].status).toBe('payment_unknown');
+    expect((mem.dukeHistory as CheckoutRun[]).filter(run => run.id === 'dup-run')).toHaveLength(1);
   });
 });

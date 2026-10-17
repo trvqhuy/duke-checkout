@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import type { Profile } from '../../shared/types.ts';
+import type { CheckoutRun, Profile } from '../../shared/types.ts';
+import { retainRunHistory } from '../../shared/history.ts';
+import { sanitizeRun } from '../../shared/run-sanitize.ts';
 
 const settingsSchema = z.object({
   quantity: z.number().int({ message: 'Quantity must be a whole number between 1 and 20.' }).min(1, { message: 'Quantity must be a whole number between 1 and 20.' }).max(20, { message: 'Quantity must be a whole number between 1 and 20.' }),
@@ -39,14 +41,21 @@ export type DukeProfileRecord = Profile;
 
 const PROFILE_KEY = 'dukeProfile';
 const HISTORY_KEY = 'dukeHistory';
-const HISTORY_CAP = 100;
 
 export async function getProfile(): Promise<Profile | null> { return (await localGet<Profile>(PROFILE_KEY)) ?? null; }
 export async function putProfile(profile: Profile): Promise<Profile> { await localSet(PROFILE_KEY, profile); return profile; }
 
 export interface HistoryEntry { id: string; status: string; [key: string]: unknown }
-export async function getHistory(): Promise<HistoryEntry[]> { return (await localGet<HistoryEntry[]>(HISTORY_KEY)) ?? []; }
-export async function pushRun(run: HistoryEntry): Promise<void> {
-  const history = [run, ...(await getHistory()).filter(item => item.id !== run.id)].slice(0, HISTORY_CAP);
-  await localSet(HISTORY_KEY, history);
+export async function getHistory(): Promise<CheckoutRun[]> { return (await localGet<CheckoutRun[]>(HISTORY_KEY)) ?? []; }
+
+// Mirrors the server's LocalStore.saveRuns: apply the shared retention policy,
+// then sanitize, and write the whole retained snapshot in one set.
+export async function saveRuns(runs: CheckoutRun[]): Promise<void> {
+  const snapshot = retainRunHistory(runs).map(sanitizeRun);
+  await localSet(HISTORY_KEY, snapshot);
+}
+
+// Upsert-by-id append used by remaining callers; retention decides what is kept.
+export async function pushRun(run: CheckoutRun): Promise<void> {
+  await saveRuns([run, ...(await getHistory()).filter(item => item.id !== run.id)]);
 }

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getSettings, putSettings, DEFAULT_SETTINGS, getProfile, putProfile, getHistory, pushRun, type DukeSettings, type DukeProfileRecord } from '../../src/extension/lib/storage.ts';
+import type { CheckoutRun } from '../../src/shared/types.ts';
+import { productUrl } from '../fixtures.ts';
 
 const mem: Record<string, unknown> = {};
 const chromeStub = { storage: { local: {
@@ -49,7 +51,13 @@ describe('profile + history storage', () => {
     expect(await getProfile()).toEqual(profile);
   });
   it('run history is capped at 100 newest-first', async () => {
-    for (let i = 0; i < 105; i++) await pushRun({ id: `run-${i}`, status: 'failed' });
+    const run = (id: string): CheckoutRun => ({
+      id, requestId: id, mode: 'prepare', status: 'ready', stage: 'complete',
+      productCode: '6071620', productUrl, quantity: 1, maxTotalCents: 2500, profileName: 'Home',
+      startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+      elapsedMs: 0, events: [],
+    });
+    for (let i = 0; i < 105; i++) await pushRun(run(`run-${i}`));
     const history = await getHistory();
     expect(history).toHaveLength(100);
     expect(history[0].id).toBe('run-104');
