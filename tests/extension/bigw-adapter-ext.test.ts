@@ -159,7 +159,8 @@ describe('BigWExtensionAdapter', () => {
   it('inspect uses the page store cookie and skips the store-list fallback', async () => {
     const called: string[] = [];
     const sender = {
-      sendMessage: async (_tabId: number, msg: { type?: string; args?: { path: string } }) => {
+      sendMessage: async (_tabId: number, raw: unknown) => {
+        const msg = raw as { type?: string; args?: { path: string } };
         if (msg.type === 'bridge.context') return { storeId: 'STORE-COOKIE', cartId: null, delivery: null };
         const key = msg.args!.path.split('?')[0];
         called.push(key);
