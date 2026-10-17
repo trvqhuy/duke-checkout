@@ -156,6 +156,26 @@ describe('BigWExtensionAdapter', () => {
     expect([...called].sort()).toEqual(['/profile/v1/addresses', '/profile/v1/profile', '/storefront/v1/cart/saved-cards']);
   });
 
+  it('inspect uses the page store cookie and skips the store-list fallback', async () => {
+    const called: string[] = [];
+    const sender = {
+      sendMessage: async (_tabId: number, msg: { type?: string; args?: { path: string } }) => {
+        if (msg.type === 'bridge.context') return { storeId: 'STORE-COOKIE', cartId: null, delivery: null };
+        const key = msg.args!.path.split('?')[0];
+        called.push(key);
+        if (key.startsWith('/warehouse-customer/v1/postcode/')) return { ok: true, status: 200, data: [{ state: 'NSW', miraklZone: 'Z1' }] };
+        if (key === '/apim/product-price-api/v1/products') return { ok: true, status: 200, data: [{ code: '6071620', name: 'X' }] };
+        if (key === '/apim/product-price-api/v1/prices/6071620') return { ok: true, status: 200, data: [{ price: { centAmount: 1800, fractionDigits: 2 } }] };
+        if (key === '/api/availability/v0/product/6071620') return { ok: false, status: 0, code: 'REQUEST_NETWORK' };
+        throw new Error('unexpected path ' + key);
+      },
+    };
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender }));
+    const info = await adapter.inspect(productUrl, profile as never);
+    expect(info.code).toBe('6071620');
+    expect(called).not.toContain('/api/stores/v0/list');
+  });
+
   it('importProfile reads the real account address shape (defaultAddress/postCode/regionCode)', async () => {
     // Regression: BIG W's account address book uses these names, unlike the cart
     // payload (postcode/state). Reading only the cart shape produced an address

@@ -98,15 +98,32 @@ export class BigWExtensionAdapter implements RetailerAdapter {
   // the adapter itself uses.
   acquirePublic(): Promise<BridgeHandle> { return this.acquire(); }
 
+  // The server adapter read the page context (cookie store id, localStorage
+  // cart id) directly; the extension asks the MAIN world for the same data over
+  // the isolated relay's `bridge.context` message.
+  private async pageContext(handle: BridgeHandle): Promise<{ storeId?: string; cartId?: string | null; delivery?: Record<string, unknown> | null } | null> {
+    try {
+      const reply = await Promise.race([
+        handle.sender.sendMessage(handle.tabId, { type: 'bridge.context' }) as Promise<{ storeId?: string; cartId?: string | null; delivery?: Record<string, unknown> | null } | null>,
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 5_000)),
+      ]);
+      return reply ?? null;
+    } catch { return null; }
+  }
+
   private async locationFor(handle: BridgeHandle, profile: Profile): Promise<Location> {
     const address = profile.deliveryAddress;
     const zones = await this.req(handle, `/warehouse-customer/v1/postcode/${encodeURIComponent(address.postcode)}?suburb=${encodeURIComponent(address.suburb.toUpperCase())}`, 'GET', undefined, 'https://api.bigw.com.au', true);
     const zone = record(Array.isArray(zones) ? zones[0] : zones);
     if (zone.state && zone.state !== address.state) throw new AppError('ADDRESS_LOCATION', 'The suburb/postcode does not match the selected state. Check the delivery address.');
-    const data = await this.req(handle, '/api/stores/v0/list', 'GET', undefined, 'https://api.bigw.com.au', true);
-    const stores = Array.isArray(data) ? data : record(data).stores;
-    const store = Array.isArray(stores) ? stores.find(item => string(record(record(item).address).state) === address.state) ?? stores[0] : undefined;
-    const storeId = string(record(store).id, string(record(store).name));
+    const context = await this.pageContext(handle);
+    let storeId = string(context?.storeId ?? '');
+    if (!storeId) {
+      const data = await this.req(handle, '/api/stores/v0/list', 'GET', undefined, 'https://api.bigw.com.au', true);
+      const stores = Array.isArray(data) ? data : record(data).stores;
+      const store = Array.isArray(stores) ? stores.find(item => string(record(record(item).address).state) === address.state) ?? stores[0] : undefined;
+      storeId = string(record(store).id, string(record(store).name));
+    }
     if (!storeId) throw new AppError('STORE_REQUIRED', 'Choose a local store once on BIG W, then prepare again.');
     return { storeId, zone: string(zone.miraklZone) || undefined, zoneType: string(zone.zoneClassification) || undefined };
   }
@@ -155,10 +172,25 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     const address = input.profile.deliveryAddress;
     report('cart', 'Preparing a cart containing only the requested item.');
     checkAbort(signal);
-    let cart = parseCartState(await this.req(handle, '/storefront/v1/cart/create', 'POST', {
-      storeId: location.storeId, postcode: address.postcode, suburb: address.suburb.toUpperCase(), state: address.state,
-      productCode: product.code, quantity: input.quantity, salesChannel: 'website',
-    }));
+    // Reuse the page's current cart when it already holds exactly this item
+    // (server parity: avoids an extra cart create on repeat runs).
+    const context = await this.pageContext(handle);
+    let cart: CartState | undefined;
+    if (context?.cartId) {
+      try {
+        const existing = parseCartState(await this.req(handle, `/storefront/v1/cart/${encodeURIComponent(context.cartId)}?state=${address.state}&channel=web`));
+        if (existing.entries.length === 1 && existing.entries[0].productCode === product.code && existing.entries[0].quantity === input.quantity) cart = existing;
+      } catch (error) {
+        if (!(error instanceof AppError) || ['LOGIN_REQUIRED', 'SESSION_EXPIRED', 'BROWSER_ATTENTION'].includes(error.code)) throw error;
+      }
+    }
+    checkAbort(signal);
+    if (!cart) {
+      cart = parseCartState(await this.req(handle, '/storefront/v1/cart/create', 'POST', {
+        storeId: location.storeId, postcode: address.postcode, suburb: address.suburb.toUpperCase(), state: address.state,
+        productCode: product.code, quantity: input.quantity, salesChannel: 'website',
+      }));
+    }
     if (!cart.id.startsWith('CT_')) throw new AppError('CHECKOUT_VERSION', 'This session returned a different BIG W checkout implementation. Preparation stopped before payment.');
     const id = encodeURIComponent(cart.id);
     // The three cart detail updates are independent of each other; only the
