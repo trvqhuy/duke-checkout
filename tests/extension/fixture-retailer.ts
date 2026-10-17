@@ -231,6 +231,18 @@ export async function makeTemporaryDir(prefix: string): Promise<string> {
   return mkdtemp(join('/tmp/opencode', prefix));
 }
 
+// The service worker addresses "the" app tab (install opens onboarding in one,
+// later triggers focus/navigate the same tab), so tests must reuse an existing
+// app tab rather than opening a second one the SW would ignore.
+export async function findOrOpenAppTab(browser: Browser, extensionId: string): Promise<Page> {
+  const base = `chrome-extension://${extensionId}/app.html`;
+  const existing = (await browser.pages()).find(page => page.url().startsWith(base));
+  if (existing) return existing;
+  const page = await browser.newPage();
+  await page.goto(base, { waitUntil: 'domcontentloaded' });
+  return page;
+}
+
 export function assertExtensionBuilt(): void {
   if (!existsSync(join(extensionDir, 'manifest.json')) || !existsSync(join(extensionDir, 'background.js'))) {
     throw new Error('dist-extension/ is missing. Run `npm run build:ext` before this suite.');

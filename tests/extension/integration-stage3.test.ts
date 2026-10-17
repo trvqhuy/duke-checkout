@@ -18,7 +18,7 @@ import { rm } from 'node:fs/promises';
 import type { Browser, Page } from 'puppeteer-core';
 import {
   RetailerFixture, assertExtensionBuilt, PRODUCT_CODE,
-  launchExtensionBrowser, makeTemporaryDir, profile, testCard, waitForBridgePing,
+  launchExtensionBrowser, makeTemporaryDir, profile, testCard, waitForBridgePing, findOrOpenAppTab,
 } from './fixture-retailer.ts';
 
 // The link the foreign page points at; the fixture answers code 6071620. It has
@@ -190,7 +190,7 @@ beforeAll(async () => {
   workPage.on('pageerror', error => fixture.runtimeErrors.push(`work pageerror: ${String(error)}`));
   await workPage.goto('https://www.bigw.com.au/', { waitUntil: 'load' });
 
-  appPage = await browser.newPage();
+  appPage = await findOrOpenAppTab(browser, extensionId);
   appPage.on('pageerror', error => fixture.runtimeErrors.push(`app pageerror: ${String(error)}`));
   await appPage.goto(`chrome-extension://${extensionId}/app.html`, { waitUntil: 'domcontentloaded' });
   await appPage.waitForSelector('#field-quantity', { timeout: 20_000 });

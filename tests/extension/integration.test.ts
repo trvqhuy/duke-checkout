@@ -98,6 +98,18 @@ async function launchExtensionBrowser(): Promise<{ browser: Browser; extensionId
   return { browser, extensionId };
 }
 
+// The service worker addresses "the" app tab (install opens onboarding in one,
+// later triggers focus/navigate that same tab), so reuse an existing app tab
+// instead of opening a second one the SW would ignore.
+async function findOrOpenAppTab(browser: Browser, extensionId: string): Promise<Page> {
+  const base = `chrome-extension://${extensionId}/app.html`;
+  const existing = (await browser.pages()).find(page => page.url().startsWith(base));
+  if (existing) return existing;
+  const page = await browser.newPage();
+  await page.goto(base, { waitUntil: 'domcontentloaded' });
+  return page;
+}
+
 beforeAll(async () => {
   if (!existsSync(join(extensionDir, 'manifest.json')) || !existsSync(join(extensionDir, 'background.js'))) {
     throw new Error('dist-extension/ is missing. Run `npm run build:ext` before this suite.');
@@ -111,7 +123,7 @@ beforeAll(async () => {
   workPage.on('request', request => intercept(request).catch(async () => { if (!request.isInterceptResolutionHandled()) return request.abort('failed', 100); }));
   workPage.on('pageerror', error => runtimeErrors.push(`work pageerror: ${String(error)}`));
   await workPage.goto('https://www.bigw.com.au/', { waitUntil: 'load' });
-  appPage = await browser.newPage();
+  appPage = await findOrOpenAppTab(browser, extensionId);
   appPage.on('pageerror', error => runtimeErrors.push(`app pageerror: ${String(error)}`));
   await appPage.goto(`chrome-extension://${extensionId}/app.html`, { waitUntil: 'domcontentloaded' });
   // The extension must be able to see the work tab AND its isolated bridge

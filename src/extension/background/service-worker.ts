@@ -8,6 +8,7 @@ import { RunManager } from './run-manager.ts';
 import { driverHandleFor } from './driver.ts';
 import { setBadge, badgeStateForRun } from './badge.ts';
 import { configureTriggers, registerContextMenus, registerCommands, registerAutoArm, dispatchTrigger, armProduct, setLastHovered } from './triggers.ts';
+import { openAppPage } from './app-page.ts';
 import { registerNotifications } from './notify.ts';
 import { AppError, publicError } from '../../server/errors.ts';
 import type { GuardEventRecord } from '../lib/retailers/types.ts';
@@ -229,7 +230,16 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender) => {
   return false;
 });
 
-chrome.runtime.onInstalled.addListener(() => { console.log('[duke] installed'); });
+chrome.runtime.onInstalled.addListener(details => {
+  console.log('[duke] installed');
+  // First run: open setup so the user imports their BIG W profile and card
+  // before any trigger can fire. A reinstall/update keeps the stored profile.
+  if (details.reason === 'install') {
+    void getProfile().then(async profile => {
+      if (!profile) await openAppPage({ onboarding: '1' });
+    }).catch(() => undefined);
+  }
+});
 
 // Trigger intents from content scripts (link-scout hover chip) and the page.
 // These carry no request id, so they are separate from the RPC listener above.
