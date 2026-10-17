@@ -7,5 +7,7 @@ coverage/
 .serena/
 .DS_Store
 dist-extension/
+release/
 *.crx
 *.pem
+duke-extension.pem
