@@ -170,6 +170,15 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     return { cartId: cart.id, cart, product };
   }
 
+  // Server parity for the RunManager port: a full preparation is the cart work
+  // followed by bringing the checkout on screen (src/server/browser/bigw.ts
+  // prepare()). Kept as a thin composite so the ported RunManager stays verbatim.
+  async prepare(input: RunRequest, product: ProductInfo, report: StageReporter, signal: AbortSignal): Promise<PreparedCheckout> {
+    const prepared = await this.prepareCart(input, product, report, signal);
+    await this.revealPrepared(prepared, report, signal);
+    return prepared;
+  }
+
   // Arm ahead of time: run every preparation step that does not need the user
   // watching. A later matching run skips straight to the payment.
   // Pre-release products that cannot enter a cart yet arm as 'standby' instead:

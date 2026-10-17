@@ -47,6 +47,6 @@ export async function putProfile(profile: Profile): Promise<Profile> { await loc
 export interface HistoryEntry { id: string; status: string; [key: string]: unknown }
 export async function getHistory(): Promise<HistoryEntry[]> { return (await localGet<HistoryEntry[]>(HISTORY_KEY)) ?? []; }
 export async function pushRun(run: HistoryEntry): Promise<void> {
-  const history = [run, ...(await getHistory())].slice(0, HISTORY_CAP);
+  const history = [run, ...(await getHistory()).filter(item => item.id !== run.id)].slice(0, HISTORY_CAP);
   await localSet(HISTORY_KEY, history);
 }
