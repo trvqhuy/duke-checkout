@@ -439,14 +439,20 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     // entry from a previous attempt cannot settle this submission.
     await driver.observeClear?.().catch(() => undefined);
     return new Promise<PaymentOutcome>(resolve => {
-      let settled = false, observed = false, requestedAction = false, checkingObserve = false, checkingState = false;
+      // `observed` records an observed payment response (the authoritative
+      // outcome source); `submitted` records that a submission was actually
+      // initiated. The server's PaymentGuard.onSent sets `observed` when the
+      // request is *sent*; the extension can only see the response, so it tracks
+      // the dispatch point separately (a Pay click, or the issued /pay call).
+      let settled = false, observed = false, submitted = false, guardEnabled = false, requestedAction = false, checkingObserve = false, checkingState = false;
       let pendingReference: string | undefined;
       const unknown: PaymentOutcome = { status: 'unknown', message: 'The payment outcome is not confirmed. Check BIG W order history before another purchase.' };
       const finish = (outcome: PaymentOutcome) => {
         if (settled) return;
         settled = true;
         clearTimeout(deadline); clearTimeout(vaultDeadline); clearInterval(observePoll); clearInterval(statePoll);
-        void driver.guardDisable().catch(() => undefined);
+        // Only release a gate this run actually opened (server: this.gate?.close()).
+        if (guardEnabled) void driver.guardDisable().catch(() => undefined);
         resolve(outcome);
       };
       const action = () => { if (!requestedAction) { requestedAction = true; onActionRequired(); } };
@@ -503,7 +509,10 @@ export class BigWExtensionAdapter implements RetailerAdapter {
       }, 700);
 
       const deadline = setTimeout(() => finish(unknown), 300_000);
-      const vaultDeadline = setTimeout(() => { if (!observed) finish(unknown); }, 20_000);
+      // Server equivalent: PaymentGuard.onSent. Only fail after 20 s if nothing
+      // was ever submitted; once a submission has been sent, a slow response
+      // must not settle as unknown.
+      const vaultDeadline = setTimeout(() => { if (!submitted) finish(unknown); }, 20_000);
 
       void (async () => {
         try {
@@ -516,6 +525,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
             }
           } else { binding.savedCardId = card.cardId; binding.securityCode = card.cvv; }
           await driver.guardEnable(binding);
+          guardEnabled = true;
           if (card.kind === 'new') {
             const fields: [string, string][] = [['number', card.number], ['expiryDate', card.expiry], ['securityCode', card.cvv]];
             const normalize = (value?: string) => (value ?? '').replace(/\D/g, '');
@@ -523,19 +533,25 @@ export class BigWExtensionAdapter implements RetailerAdapter {
             // clears the card and turns a Pay click into a silent no-op. Keep
             // re-filling and clicking until a payment request is observed. The
             // guard allows only the first submission, so re-clicking is safe.
-            for (let attempt = 0; attempt < 6 && !settled && !observed; attempt++) {
+            // Stop once a Pay click has been dispatched (server:
+            // PaymentGuard.onSent) — a slow response must not settle unknown.
+            for (let attempt = 0; attempt < 6 && !settled && !observed && !submitted; attempt++) {
               if (!(await this.valuesPersisted(driver, fields, normalize))) {
                 try { await this.fillCard(card); } catch { /* fill logs its own reason */ }
               }
-              if (settled || observed) break;
-              await driver.sendTop({ type: 'driver.clickPay' }).catch(() => undefined);
+              if (settled || observed || submitted) break;
+              const click = await driver.sendTop({ type: 'driver.clickPay' }).catch(() => undefined) as { clicked?: boolean } | undefined;
+              if (click?.clicked === true) submitted = true;
               const until = Date.now() + 4000;
-              while (Date.now() < until && !settled && !observed) await sleep(200);
-              if (!settled && !observed) console.log(`[duke] card submit: no payment seen after click ${attempt + 1}; retrying`);
+              while (Date.now() < until && !settled && !observed && !submitted) await sleep(200);
+              if (!settled && !observed && !submitted) console.log(`[duke] card submit: no payment seen after click ${attempt + 1}; retrying`);
             }
-            if (!observed && !settled) finish(unknown);
+            if (!observed && !submitted && !settled) finish(unknown);
           } else {
             const fingerprint = (await driver.antiFraud()).fingerprint;
+            // Issuing the stored-card /pay request is this path's submission
+            // point (server: PaymentGuard.onSent on the intercepted request).
+            submitted = true;
             const value = await this.req(handle, `/storefront/v1/cart/${encodeURIComponent(prepared.cartId)}/pay`, 'POST', {
               cartId: prepared.cartId, cartVersion: prepared.cart.version, deviceFingerprint: fingerprint,
               transactions: { creditCardPaymentStoredInfo: { amountInCents: prepared.cart.total, securityCode: card.cvv, internalPaymentMethodId: card.cardId } },

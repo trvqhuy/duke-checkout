@@ -191,6 +191,83 @@ describe('BigWExtensionAdapter stage 2 — pay', () => {
     expect(outcome).toMatchObject({ status: 'blocked', code: 'CARD_SESSION' });
     expect(calls.guardBindings).toEqual([]);
   });
+
+  it('disables the guard on the pay success path', async () => {
+    const { adapter, calls } = setup({
+      values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+      observe: [paymentEntry({ data: { orderNumber: 'ORD-9' } })],
+    });
+    expect((await adapter.pay(prepared, newCard, () => {})).status).toBe('confirmed');
+    expect(calls.guardDisable).toBe(1);
+  });
+
+  it('disables the guard on the vault-failure path', async () => {
+    const { adapter, calls } = setup({
+      values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+      observe: [{ url: 'https://api.wpay2.gr4vy.app/checkout/sessions/abc/card-details', method: 'POST', status: 400, bodyText: '{}' }],
+    });
+    expect((await adapter.pay(prepared, newCard, () => {})).status).toBe('declined');
+    expect(calls.guardDisable).toBe(1);
+  });
+
+  it('does not disable a guard it never enabled', async () => {
+    const { adapter, calls } = setup({ frames: [] });
+    expect((await adapter.pay(prepared, newCard, () => {})).status).toBe('blocked');
+    expect(calls.guardDisable).toBe(0);
+  });
+
+  it('signals a challenge once, then confirms from the checkout state', async () => {
+    vi.useFakeTimers();
+    try {
+      const state: Record<string, unknown> = { url: 'https://www.bigw.com.au/checkout/delivery', challenge: true, confirmed: false };
+      const entries: ObservedEntry[] = [];
+      const { adapter } = setup({
+        values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+        state,
+        observe: () => entries,
+      });
+      const onActionRequired = vi.fn();
+      const pending = adapter.pay(prepared, newCard, onActionRequired);
+      await vi.advanceTimersByTimeAsync(700);
+      expect(onActionRequired).toHaveBeenCalledTimes(1);
+      entries.push(paymentEntry({ status: 'PENDING', orderNumber: 'ORD-P' }));
+      state.challenge = false;
+      state.confirmed = true;
+      state.url = 'https://www.bigw.com.au/checkout/confirmation';
+      await vi.advanceTimersByTimeAsync(700);
+      await vi.advanceTimersByTimeAsync(700);
+      await expect(pending).resolves.toEqual({ status: 'confirmed', orderNumber: 'ORD-P' });
+      expect(onActionRequired).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('settles unknown on a status-0 payment entry', async () => {
+    const { adapter } = setup({
+      values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+      observe: [paymentEntry({}, 0)],
+    });
+    expect((await adapter.pay(prepared, newCard, () => {})).status).toBe('unknown');
+  });
+
+  it('waits past the 20 s vault deadline once a Pay click has been submitted', async () => {
+    vi.useFakeTimers();
+    try {
+      const entries: ObservedEntry[] = [];
+      const { adapter } = setup({
+        values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+        observe: () => entries,
+      });
+      let result: string | undefined;
+      const pending = adapter.pay(prepared, newCard, () => {}).then(outcome => { result = outcome.status; return outcome; });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(result).toBeUndefined();
+      entries.push(paymentEntry({ data: { orderNumber: 'ORD-LATE' } }));
+      await vi.advanceTimersByTimeAsync(700);
+      await expect(pending).resolves.toEqual({ status: 'confirmed', orderNumber: 'ORD-LATE' });
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 describe('BigWExtensionAdapter stage 2 — revealPrepared', () => {
