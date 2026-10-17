@@ -17,16 +17,11 @@ import { configureAppPage, ensureAppPage, openAppPage } from './app-page.ts';
 import { getArmed } from './state.ts';
 import { setBadge } from './badge.ts';
 import { NOTIFICATION_ICON } from './notify.ts';
+import { modeNeedsCard } from '../../shared/validation.ts';
 import type { ArmedCheckout, RunRequest, StageReporter } from '../../shared/types.ts';
 
 export type TriggerAction = 'checkout' | 'arm';
 export type TriggerPlan = 'arm' | 'start' | 'open-app' | 'open-onboarding';
-
-// Modes that pause for the user in the app (fill-only or a real payment) need a
-// card before a run can start; prepare and afterpay do not.
-function modeNeedsCard(mode: DukeSettings['mode']): boolean {
-  return mode === 'assist' || mode === 'purchase';
-}
 
 // The single source of truth for a trigger. Order matters:
 //   no profile            -> send them to onboarding first

@@ -11,6 +11,7 @@ const FRAMES: DriverFrame[] = [
   { frameId: 13, url: 'https://secure-fields.wpay2.gr4vy.app/input.html?type=securityCode&sessionId=S-1', type: 'securityCode' },
 ];
 
+const BLOCKED_MESSAGE = 'The cart, total, or payment session changed before submission. The request was blocked; prepare a fresh run.';
 const newCard: PaymentInput = { kind: 'new', number: '4111111111111111', expiry: '12/37', cvv: '123' };
 const savedCard: PaymentInput = { kind: 'saved', cardId: 'CARD-1', cvv: '321' };
 
@@ -30,7 +31,10 @@ interface DriverOptions {
   afterpay?: Record<string, unknown>;
   values?: Record<string, string>;
   wipeReads?: number;
+  guardEvents?: GuardEventRecord[] | (() => GuardEventRecord[]);
 }
+
+type GuardEventRecord = { type: string; code?: string; at: number };
 
 function makeDriver(options: DriverOptions = {}) {
   const values: Record<string, string> = { ...(options.values ?? {}) };
@@ -81,6 +85,7 @@ function makeDriver(options: DriverOptions = {}) {
     observeClear: async () => { calls.observeClear++; },
     guardEnable: async (binding: PaymentBinding) => { calls.guardBindings.push(binding); },
     guardDisable: async () => { calls.guardDisable++; },
+    guardEvents: async () => (typeof options.guardEvents === 'function' ? options.guardEvents() : (options.guardEvents ?? [])),
     antiFraud: async () => ({ fingerprint: options.fingerprint ?? 'FP-1' }),
   };
   return { driver, calls };
@@ -300,6 +305,50 @@ describe('BigWExtensionAdapter stage 2 — pay', () => {
       entries[0].bodyText = JSON.stringify({ data: { orderNumber: 'ORD-LATE' } });
       await vi.advanceTimersByTimeAsync(700);
       await expect(pending).resolves.toEqual({ status: 'confirmed', orderNumber: 'ORD-LATE' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('finishes blocked when the guard prevented the submission before any request was sent', async () => {
+    vi.useFakeTimers({ now: 1_700_000_000_000 });
+    try {
+      const { adapter } = setup({
+        values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+        guardEvents: () => [{ type: 'prevented', code: 'CART_CHANGED', at: Date.now() }],
+      });
+      const pending = adapter.pay(prepared, newCard, () => {});
+      await vi.advanceTimersByTimeAsync(700);
+      await expect(pending).resolves.toEqual({ status: 'blocked', code: 'CART_CHANGED', message: BLOCKED_MESSAGE });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('ignores a prevented guard event once a payment request was sent', async () => {
+    vi.useFakeTimers({ now: 1_700_000_000_000 });
+    try {
+      const { adapter } = setup({
+        values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+        guardEvents: () => [
+          { type: 'sent', at: Date.now() },
+          { type: 'prevented', code: 'PAYMENT_DUPLICATE', at: Date.now() },
+        ],
+      });
+      const pending = adapter.pay(prepared, newCard, () => {});
+      // No observer entry, but a sent guard event shields the prevented one: the
+      // run must not finish blocked and instead falls through to the deadline.
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(pending).resolves.toMatchObject({ status: 'unknown' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('ignores a prevented guard event recorded before the guard was enabled', async () => {
+    vi.useFakeTimers({ now: 1_700_000_000_000 });
+    try {
+      const { adapter } = setup({
+        values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+        guardEvents: [{ type: 'prevented', code: 'CART_CHANGED', at: 1_699_999_999_000 }],
+      });
+      const pending = adapter.pay(prepared, newCard, () => {});
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(pending).resolves.toMatchObject({ status: 'unknown' });
     } finally { vi.useRealTimers(); }
   });
 });

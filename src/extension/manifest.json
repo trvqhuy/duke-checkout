@@ -12,6 +12,7 @@
     "https://secure-fields.wpay2.gr4vy.app/*",
     "https://portal.afterpay.com/*"
   ],
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "background": { "service_worker": "background.js", "type": "module" },
   "commands": {
     "duke-checkout": {
@@ -19,7 +20,11 @@
       "description": "Duke: checkout the last product link"
     }
   },
-  "action": { "default_title": "Duke Checkout", "default_popup": "app.html?popup=1" },
+  "action": {
+    "default_title": "Duke Checkout",
+    "default_popup": "app.html?popup=1",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
   "options_page": "app.html",
   "content_scripts": [
     { "matches": ["https://www.bigw.com.au/*"], "js": ["content/api-bridge-main.js"], "run_at": "document_start", "world": "MAIN" },

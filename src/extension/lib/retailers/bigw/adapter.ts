@@ -61,6 +61,9 @@ interface Location { storeId: string; zone?: string; zoneType?: string }
 
 const SECURE_ORIGIN = 'https://secure-fields.wpay2.gr4vy.app';
 const CHECKOUT_URL = 'https://www.bigw.com.au/checkout/delivery';
+// Verbatim server copy (src/server/browser/payment.ts, PaymentGuard.onPrevented):
+// the guard blocked a submission before it reached the network.
+const BLOCKED_MESSAGE = 'The cart, total, or payment session changed before submission. The request was blocked; prepare a fresh run.';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Verbatim from src/server/browser/payment.ts (not exported there): a merchant
@@ -524,7 +527,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
       // entry with status -1 (in flight) that it later updates in place with the
       // real status (0 = network failure). A Pay click that does nothing — the
       // secure fields were rebuilt — produces no entry and must keep retrying.
-      let settled = false, observed = false, guardEnabled = false, requestedAction = false, checkingObserve = false, checkingState = false;
+      let settled = false, observed = false, guardEnabled = false, guardEnabledAt = 0, requestedAction = false, checkingObserve = false, checkingState = false;
       let pendingReference: string | undefined;
       const unknown: PaymentOutcome = { status: 'unknown', message: 'The payment outcome is not confirmed. Check BIG W order history before another purchase.' };
       const finish = (outcome: PaymentOutcome) => {
@@ -570,6 +573,25 @@ export class BigWExtensionAdapter implements RetailerAdapter {
                 if (outcome) { finish(outcome); return; }
               }
             }
+            // Guard-event bridge: the MAIN-world guard can block a submission
+            // before it reaches the network (a changed cart/version/amount/
+            // session or a duplicate), so no observer entry and no `sent` event
+            // appear. The server finishes these as `blocked` via
+            // PaymentGuard.onPrevented; mirror that instead of waiting out the
+            // deadline as `unknown`. A `sent` event means the payment went out,
+            // so a later prevented event (a duplicate) must not override it.
+            if (settled) return;
+            if (!observed && guardEnabled) {
+              const events = await driver.guardEvents().catch(() => []);
+              const relevant = events.filter(event => event.at >= guardEnabledAt);
+              if (!relevant.some(event => event.type === 'sent')) {
+                const prevented = relevant.find(event => event.type === 'prevented');
+                if (prevented) {
+                  finish({ status: 'blocked', code: prevented.code ?? 'PAYMENT_CHANGED', message: BLOCKED_MESSAGE });
+                  return;
+                }
+              }
+            }
           } catch { /* observation is best-effort; retry on the next tick */ }
           finally { checkingObserve = false; }
         })();
@@ -610,6 +632,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
           } else { binding.savedCardId = card.cardId; binding.securityCode = card.cvv; }
           await driver.guardEnable(binding);
           guardEnabled = true;
+          guardEnabledAt = Date.now();
           if (card.kind === 'new') {
             const fields: [string, string][] = [['number', card.number], ['expiryDate', card.expiry], ['securityCode', card.cvv]];
             const normalize = (value?: string) => (value ?? '').replace(/\D/g, '');

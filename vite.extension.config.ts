@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { copyFileSync, existsSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, renameSync, rmSync } from 'node:fs';
 import * as esbuild from 'esbuild';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -53,6 +53,8 @@ export default defineConfig({
     name: 'duke-manifest',
     closeBundle() {
       copyFileSync(resolve(root, 'src/extension/manifest.json'), resolve(root, 'dist-extension/manifest.json'));
+      // The manifest declares icons/, so the built extension must contain them.
+      cpSync(resolve(root, 'src/extension/icons'), resolve(root, 'dist-extension/icons'), { recursive: true });
       const htmlOut = resolve(root, 'dist-extension/src/extension/app/app.html');
       if (!existsSync(htmlOut)) {
         throw new Error('Vite output layout changed: app.html not found at expected path (dist-extension/src/extension/app/app.html)');

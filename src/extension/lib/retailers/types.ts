@@ -10,6 +10,11 @@ import type { PaymentBinding } from '../../../shared/payment-check.ts';
 // Stage-2 adapter method requires it and raises BROWSER_ATTENTION without it.
 export interface DriverFrame { frameId: number; url: string; type?: string }
 export interface ObservedEntry { url: string; method: string; status: number; bodyText: string }
+// A MAIN-world guard event forwarded by the relay: `sent` means a payment
+// request actually left, `prevented` means the guard blocked it before the
+// network, and `at` is when the service worker recorded it (used to ignore
+// events from a previous submission).
+export interface GuardEventRecord { type: string; code?: string; at: number }
 export interface DriverHandle {
   frames(): Promise<DriverFrame[]>;
   sendTop(message: unknown): Promise<unknown>;
@@ -23,6 +28,10 @@ export interface DriverHandle {
   observeClear?(): Promise<void>;
   guardEnable(binding: PaymentBinding): Promise<void>;
   guardDisable(): Promise<void>;
+  // Advisory MAIN-world guard events for this tab (newest-last, bounded). The
+  // adapter filters them by the time it enabled the guard; a `prevented` event
+  // with no `sent` event means the submission never reached the network.
+  guardEvents(): Promise<GuardEventRecord[]>;
   antiFraud(): Promise<{ fingerprint: string }>;
 }
 export interface BridgeHandle { tabId: number; sender: { sendMessage: (tabId: number, msg: unknown) => Promise<unknown> }; driver?: DriverHandle }

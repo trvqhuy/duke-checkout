@@ -1,6 +1,13 @@
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import { z } from 'zod';
-import type { PaymentInput, Profile, RunRequest } from './types.ts';
+import type { PaymentInput, Profile, RunMode, RunRequest } from './types.ts';
+
+// Modes that pause for the user with a card: fill-only (assist) and a real
+// payment (purchase). prepare and afterpay submit nothing, so they need none.
+// Defined once here so the trigger policy and the app form cannot drift.
+export function modeNeedsCard(mode: RunMode): boolean {
+  return mode === 'assist' || mode === 'purchase';
+}
 
 export function parseProductLink(value: string): { url: string; code: string } {
   const url = new URL(value.trim());

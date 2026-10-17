@@ -4,6 +4,7 @@ import { DeliveryFields, Field, Icon, PaymentFields, RunHistory, StatusBadge, du
 import type { DukeSettings, SessionCard } from '../lib/storage.ts';
 import { mergeRuns } from '../../client/run-state.ts';
 import { connectRunPort, onEvent, request } from './transport.ts';
+import { modeNeedsCard } from '../../shared/validation.ts';
 
 interface BootstrapData {
   settings: DukeSettings;
@@ -25,7 +26,6 @@ const modes: { value: RunMode; label: string; blurb: string }[] = [
 const stageLabels: Record<Stage, string> = { connect: 'Browser & session', inspect: 'Product & availability', cart: 'Cart & delivery', contact: 'Contact & billing', payment: 'Secure payment', complete: 'Complete' };
 const runningStatuses: CheckoutRun['status'][] = ['queued', 'running', 'action_required'];
 const isRunning = (run: CheckoutRun) => runningStatuses.includes(run.status);
-const modeNeedsCard = (mode: RunMode) => mode === 'assist' || mode === 'purchase';
 
 export default function App() {
   const [settings, setSettings] = useState<DukeSettings | null>(null);

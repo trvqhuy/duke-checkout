@@ -16,7 +16,7 @@
 // rejects outright and a mounted frame that never answers would otherwise hang
 // a run, so both surface as DRIVER_TIMEOUT.
 import { AppError } from '../../server/errors.ts';
-import type { DriverFrame, DriverHandle, ObservedEntry } from '../lib/retailers/types.ts';
+import type { DriverFrame, DriverHandle, GuardEventRecord, ObservedEntry } from '../lib/retailers/types.ts';
 import type { PaymentBinding } from '../../shared/payment-check.ts';
 
 const GR4VY_HOST = 'secure-fields.wpay2.gr4vy.app';
@@ -39,7 +39,12 @@ function driverTimeout(reason: string): AppError {
   return new AppError('DRIVER_TIMEOUT', `The BIG W checkout driver did not respond (${reason}). Reload the checkout tab and try again.`);
 }
 
-export function driverHandleFor(tabId: number, timeoutMs = DEFAULT_TIMEOUT_MS): DriverHandle {
+// Reads the guard events the service worker recorded for a tab. Injected so
+// this module stays chrome-only (and unit tests can stub the reader) while the
+// in-memory event list lives in the worker.
+export type GuardEventProvider = (tabId: number) => GuardEventRecord[];
+
+export function driverHandleFor(tabId: number, timeoutMs = DEFAULT_TIMEOUT_MS, guardEventProvider?: GuardEventProvider): DriverHandle {
   async function call(message: unknown, frameId?: number): Promise<unknown> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -77,6 +82,7 @@ export function driverHandleFor(tabId: number, timeoutMs = DEFAULT_TIMEOUT_MS): 
     async observeClear() { await control({ kind: 'observe.clear' }); },
     async guardEnable(binding) { await control({ kind: 'guard.enable', binding }); },
     async guardDisable() { await control({ kind: 'guard.disable' }); },
+    async guardEvents() { return guardEventProvider?.(tabId) ?? []; },
     async antiFraud() { return await control({ kind: 'observe.antiFraud' }) as { fingerprint: string }; },
   };
 }

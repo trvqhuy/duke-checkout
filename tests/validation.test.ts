@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseProductLink, validateCard, validateProfile, validateRun } from '../src/shared/validation.ts';
+import { modeNeedsCard, parseProductLink, validateCard, validateProfile, validateRun } from '../src/shared/validation.ts';
 import { productUrl, profile, runInput, testCard } from './fixtures.ts';
 
 describe('checkout inputs', () => {
@@ -48,6 +48,13 @@ describe('checkout inputs', () => {
     expect(() => validateRun({ ...runInput, mode: 'purchase' })).toThrow();
     expect(validateRun({ ...runInput, mode: 'assist', card: testCard }).card?.kind).toBe('new');
     expect(validateRun({ ...runInput, mode: 'purchase', card: testCard }).card?.kind).toBe('new');
+  });
+
+  it('identifies the modes that need a card', () => {
+    expect(modeNeedsCard('assist')).toBe(true);
+    expect(modeNeedsCard('purchase')).toBe(true);
+    expect(modeNeedsCard('prepare')).toBe(false);
+    expect(modeNeedsCard('afterpay')).toBe(false);
   });
 
   it('allows the Afterpay mode without a card', () => {

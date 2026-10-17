@@ -10,6 +10,7 @@ import { setBadge, badgeStateForRun } from './badge.ts';
 import { configureTriggers, registerContextMenus, registerCommands, registerAutoArm, dispatchTrigger, armProduct, setLastHovered } from './triggers.ts';
 import { registerNotifications } from './notify.ts';
 import { AppError, publicError } from '../../server/errors.ts';
+import type { GuardEventRecord } from '../lib/retailers/types.ts';
 import type { ArmedCheckout, RunRequest } from '../../shared/types.ts';
 
 // The armed checkout, mirrored from chrome.storage.session into memory so the
@@ -17,6 +18,19 @@ import type { ArmedCheckout, RunRequest } from '../../shared/types.ts';
 // check without async storage. The store's set() is the single writer: it keeps
 // the cache and session storage in lockstep.
 let armedCache: ArmedCheckout | null = null;
+
+// MAIN-world guard events, forwarded per tab by the isolated relay and bounded
+// like the observer's ring buffer. They are ADVISORY (any page script can forge
+// them), so nothing acts on them except the adapter's blocked-vs-unknown
+// reconciliation: a `prevented` event with no `sent` event means the guard
+// blocked a submission before it reached the network. Keyed by tab so a stale
+// event from another checkout cannot settle a run.
+interface TabGuardEvent { tabId: number; type: string; code?: string; at: number }
+const GUARD_EVENT_LIMIT = 20;
+const guardEventLog: TabGuardEvent[] = [];
+export function guardEventsFor(tabId: number): GuardEventRecord[] {
+  return guardEventLog.filter(event => event.tabId === tabId).map(event => ({ type: event.type, code: event.code, at: event.at }));
+}
 
 // Every acquire returns the tab id, the bridge sender, and a fresh Stage-2
 // driver handle for that tab (the driver is chrome-backed, so it is built here
@@ -26,7 +40,7 @@ const adapter = new BigWExtensionAdapter(
     const tab = await acquireWorkTab();
     if (!tab.id) throw new AppError('BRIDGE_UNREADY', 'No BIG W tab is available. Open bigw.com.au once.');
     await waitForBridgeReady(tab.id);
-    return { tabId: tab.id, sender: { sendMessage: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg as never) }, driver: driverHandleFor(tab.id) };
+    return { tabId: tab.id, sender: { sendMessage: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg as never) }, driver: driverHandleFor(tab.id, undefined, guardEventsFor) };
   },
   {
     get: () => armedCache,
@@ -199,13 +213,18 @@ chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
 });
 
 // MAIN-world guard events are ADVISORY ONLY (Task-3 trust boundary): any page
-// script on bigw.com.au can forge them, so the service worker only logs them
-// and takes no action. The adapter reconciles real outcomes from the
-// observe.list ring buffer and the run's own request results, never from these
-// events.
-chrome.runtime.onMessage.addListener((raw: unknown) => {
+// script on bigw.com.au can forge them, so they only ever inform the adapter's
+// blocked-vs-unknown reconciliation; the authoritative record stays the
+// observe.list ring buffer and the run's own request results. Recorded per tab
+// with the worker's own clock so the adapter can ignore events from before it
+// enabled the guard.
+chrome.runtime.onMessage.addListener((raw: unknown, sender) => {
   const message = raw as { type?: string; event?: { type?: string; code?: string } } | null;
   if (message?.type !== 'guard.event') return false;
+  const tabId = sender.tab?.id;
+  if (tabId === undefined) return false;
+  guardEventLog.push({ tabId, type: String(message.event?.type ?? ''), code: message.event?.code, at: Date.now() });
+  while (guardEventLog.length > GUARD_EVENT_LIMIT) guardEventLog.shift();
   console.log('[duke] guard', message.event?.type, message.event?.code ?? '');
   return false;
 });
