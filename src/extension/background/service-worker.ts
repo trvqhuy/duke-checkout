@@ -7,12 +7,13 @@ import { BigWExtensionAdapter } from '../lib/retailers/bigw/adapter.ts';
 import { RunManager } from './run-manager.ts';
 import { driverHandleFor } from './driver.ts';
 import { setBadge, badgeStateForRun } from './badge.ts';
-import { configureTriggers, registerContextMenus, registerCommands, registerAutoArm, dispatchTrigger, armProduct, setLastHovered } from './triggers.ts';
+import { configureTriggers, registerContextMenus, registerCommands, registerAutoArm, dispatchTriggerSafely, armProduct, setLastHovered } from './triggers.ts';
 import { openAppPage } from './app-page.ts';
 import { registerNotifications } from './notify.ts';
 import { AppError, publicError } from '../../server/errors.ts';
 import type { GuardEventRecord } from '../lib/retailers/types.ts';
 import type { ArmedCheckout, RunRequest } from '../../shared/types.ts';
+import { validateProfile } from '../../shared/validation.ts';
 
 // The armed checkout, mirrored from chrome.storage.session into memory so the
 // adapter's synchronous armedState() can answer the RunManager's fast-path
@@ -157,12 +158,16 @@ async function handle(request: DukeRequest): Promise<unknown> {
     case 'settings.get': return await getSettings();
     case 'settings.put': return await putSettings(request.payload as never);
     case 'profile.get': return await getProfile();
-    case 'profile.put': return await putProfile(request.payload as never);
+    case 'profile.put': return await putProfile(validateProfile(request.payload));
     case 'profile.import': {
       // The extension has no BIG W page context, so the address-state fallback
       // (server: context.delivery?.state) comes from the stored profile instead.
       const existing = await getProfile();
-      return await adapter.importProfile(existing?.deliveryAddress.state);
+      const imported = await adapter.importProfile(existing?.deliveryAddress.state);
+      // Validate what BIG W returned so the UI can show exactly which fields the
+      // user must fix (BIG W accounts may hold an overseas mobile, for example).
+      try { validateProfile(imported.profile); return { ...imported, issues: {} }; }
+      catch (error) { return { ...imported, issues: publicError(error).fields ?? {} }; }
     }
     // Card material stays behind the service worker: the app page never touches
     // chrome.storage.session directly for the one-run card.
@@ -249,7 +254,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender) => {
   const message = raw as { type?: string; url?: string } | null;
   if (!message || typeof message.type !== 'string') return false;
   if (message.type === 'trigger.checkout' || message.type === 'trigger.arm') {
-    void dispatchTrigger(message.type === 'trigger.arm' ? 'arm' : 'checkout', typeof message.url === 'string' ? message.url : '', sender.tab?.id).catch(() => undefined);
+    void dispatchTriggerSafely(message.type === 'trigger.arm' ? 'arm' : 'checkout', typeof message.url === 'string' ? message.url : '', sender.tab?.id);
   } else if (message.type === 'trigger.hovered' && sender.tab?.id !== undefined && typeof message.url === 'string') {
     setLastHovered(sender.tab.id, message.url);
   }

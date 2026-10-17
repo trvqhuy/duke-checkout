@@ -163,10 +163,20 @@ export default function App() {
   // profile, and show how many saved cards came back.
   async function importBigWProfile() {
     await run('import', async () => {
-      const imported = await request<{ profile: Profile; savedCards: SavedCard[] }>('profile.import');
-      setProfile(await request<Profile>('profile.put', imported.profile));
+      const imported = await request<{ profile: Profile; savedCards: SavedCard[]; issues?: Record<string, string> }>('profile.import');
       setCards(imported.savedCards);
       setImportedCount(imported.savedCards.length);
+      const issues = imported.issues ?? {};
+      if (Object.keys(issues).length) {
+        // Show what BIG W returned so the user can correct it (for example an
+        // account phone that is not an Australian mobile) before saving.
+        setProfile(imported.profile);
+        throw Object.assign(
+          new Error(`Imported your BIG W details. Fix these before saving: ${Object.values(issues).join(' ')}`),
+          { code: 'PROFILE_INCOMPLETE', fields: issues },
+        );
+      }
+      setProfile(await request<Profile>('profile.put', imported.profile));
     });
   }
   // Store the entered card in chrome.storage.session so later one-click runs can

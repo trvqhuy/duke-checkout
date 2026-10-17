@@ -234,12 +234,29 @@ export async function makeTemporaryDir(prefix: string): Promise<string> {
 // The service worker addresses "the" app tab (install opens onboarding in one,
 // later triggers focus/navigate the same tab), so tests must reuse an existing
 // app tab rather than opening a second one the SW would ignore.
+// Keep exactly one app tab: the service worker navigates "the" app tab, and a
+// second one (for example the asynchronous first-install onboarding tab) would
+// silently receive the navigation instead of the tab the test is driving.
+export async function keepOnlyAppTab(browser: Browser, keep: Page, extensionId: string): Promise<void> {
+  const base = `chrome-extension://${extensionId}/app.html`;
+  for (const page of await browser.pages()) {
+    if (page !== keep && page.url().startsWith(base)) await page.close().catch(() => undefined);
+  }
+}
+
 export async function findOrOpenAppTab(browser: Browser, extensionId: string): Promise<Page> {
   const base = `chrome-extension://${extensionId}/app.html`;
-  const existing = (await browser.pages()).find(page => page.url().startsWith(base));
-  if (existing) return existing;
-  const page = await browser.newPage();
-  await page.goto(base, { waitUntil: 'domcontentloaded' });
+  // The service worker addresses "the" app tab, so exactly one may exist. A
+  // fresh install opens onboarding asynchronously, which can race the harness
+  // into a second tab; keep one and close the rest so both sides agree.
+  const matches = async () => (await browser.pages()).filter(page => page.url().startsWith(base));
+  let pages = await matches();
+  if (pages.length > 1) {
+    for (const extra of pages.slice(1)) await extra.close().catch(() => undefined);
+    pages = await matches();
+  }
+  const page = pages[0] ?? await browser.newPage();
+  if (!page.url().startsWith(base)) await page.goto(base, { waitUntil: 'domcontentloaded' });
   return page;
 }
 

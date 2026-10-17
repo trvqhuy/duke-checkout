@@ -19,6 +19,7 @@ import { setBadge } from './badge.ts';
 import { NOTIFICATION_ICON } from './notify.ts';
 import { modeNeedsCard } from '../../shared/validation.ts';
 import type { ArmedCheckout, RunRequest, StageReporter } from '../../shared/types.ts';
+import { publicError } from '../../server/errors.ts';
 
 export type TriggerAction = 'checkout' | 'arm';
 export type TriggerPlan = 'arm' | 'start' | 'open-app' | 'open-onboarding';
@@ -118,7 +119,7 @@ function broadcast(event: { type: string; payload: unknown }): void {
 // The icon lives in notify.ts so the hint and the outcome notifications share
 // one mark (a one-way import). openAppPage now lives in app-page.ts, so there
 // is no triggers <-> notify module cycle.
-function notifyHint(message: string): void {
+export function notifyHint(message: string): void {
   try {
     void chrome.notifications.create({
       type: 'basic', iconUrl: NOTIFICATION_ICON, title: 'Duke Checkout', message,
@@ -196,6 +197,21 @@ export async function dispatchTrigger(action: TriggerAction, url: string, _tabId
   });
 }
 
+// Every non-UI entry point (chip, menu, command, SW message) goes through this
+// wrapper: a trigger must never fail silently. Validation errors are shown with
+// their field messages and the app page opens on the product so the user can fix
+// the form and start again.
+export async function dispatchTriggerSafely(action: TriggerAction, url: string, tabId?: number): Promise<void> {
+  try {
+    await dispatchTrigger(action, url, tabId);
+  } catch (error) {
+    const issue = publicError(error);
+    const detail = issue.fields ? Object.values(issue.fields).join(' ') : '';
+    notifyHint(`${issue.message} ${detail}`.trim());
+    if (isProductUrl(url)) await openAppPage({ product: url }).catch(() => undefined);
+  }
+}
+
 // --- registration -----------------------------------------------------------
 export function registerContextMenus(): void {
   chrome.contextMenus.removeAll(() => {
@@ -204,7 +220,7 @@ export function registerContextMenus(): void {
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     const action: TriggerAction = info.menuItemId === 'duke-arm' ? 'arm' : 'checkout';
-    void dispatchTrigger(action, info.linkUrl ?? '', tab?.id).catch(() => undefined);
+    void dispatchTriggerSafely(action, info.linkUrl ?? '', tab?.id);
   });
 }
 
@@ -218,7 +234,7 @@ export function registerCommands(): void {
       if (!tab?.id) return;
       const hovered = getLastHovered(tab.id);
       const candidate = hovered && isProductUrl(hovered) ? hovered : isProductUrl(tab.url ?? '') ? tab.url! : '';
-      await dispatchTrigger('checkout', candidate, tab.id);
+      await dispatchTriggerSafely('checkout', candidate, tab.id);
     })().catch(() => undefined);
   });
 }

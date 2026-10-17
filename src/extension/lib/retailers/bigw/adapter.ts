@@ -282,12 +282,23 @@ export class BigWExtensionAdapter implements RetailerAdapter {
       this.savedCards(),
     ]);
     const account = record(accountData);
-    const addresses = Array.isArray(addressesData) ? addressesData : [];
-    const address = record(addresses.find(item => record(item).primary === true) ?? addresses[0]);
+    const addresses = (Array.isArray(addressesData) ? addressesData : []).map(record);
+    // The account address book uses `defaultAddress` / `postCode` / `regionCode`
+    // (BIG W's cart payload uses `postcode` / `state`), so prefer a complete
+    // address and read both shapes.
+    const hasPostcode = (value: Record<string, unknown>) => string(value.postcode, string(value.postCode)).length > 0;
+    const address = addresses.find(item => item.defaultAddress === true && hasPostcode(item))
+      ?? addresses.find(item => item.defaultAddress === true)
+      ?? addresses.find(item => item.primary === true)
+      ?? addresses.find(hasPostcode)
+      ?? addresses[0]
+      ?? {};
     const name = record(account.name), phone = record(account.phone);
     const normalize = (value: Record<string, unknown>): Address => ({
       line1: string(value.line1), line2: string(value.line2), suburb: string(value.suburb, string(value.town)),
-      postcode: string(value.postcode), state: string(value.state).replace('AU-', '') || fallbackState || '', country: 'AU',
+      postcode: string(value.postcode, string(value.postCode)),
+      state: string(value.state).replace('AU-', '') || string(value.regionCode) || fallbackState || '',
+      country: 'AU',
     });
     return { profile: {
       name: 'BIG W delivery', firstName: string(address.firstName, string(name.given)),

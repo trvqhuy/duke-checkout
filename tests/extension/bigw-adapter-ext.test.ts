@@ -156,6 +156,27 @@ describe('BigWExtensionAdapter', () => {
     expect([...called].sort()).toEqual(['/profile/v1/addresses', '/profile/v1/profile', '/storefront/v1/cart/saved-cards']);
   });
 
+  it('importProfile reads the real account address shape (defaultAddress/postCode/regionCode)', async () => {
+    // Regression: BIG W's account address book uses these names, unlike the cart
+    // payload (postcode/state). Reading only the cart shape produced an address
+    // with an empty postcode and state, which then failed run validation.
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({
+      '/profile/v1/addresses': { ok: true, status: 200, data: [{
+        countryCode: 'AU', id: 'addr-1', firstName: 'Huy', lastName: 'Trinh',
+        line1: 'U 1  87 Moriah St', line2: '', suburb: 'CLAYTON',
+        postCode: '3168', regionName: 'Victoria', regionCode: 'VIC',
+        countryName: 'Australia', defaultAddress: true,
+      }] },
+      '/profile/v1/profile': { ok: true, status: 200, data: { name: { given: 'Huy', family: 'Trinh' }, phone: { mobile: '0412345678' } } },
+      '/storefront/v1/cart/saved-cards': { ok: true, status: 200, data: [] },
+    }) }));
+    const { profile: imported } = await adapter.importProfile();
+    expect(imported.deliveryAddress).toEqual({
+      line1: 'U 1  87 Moriah St', line2: '', suburb: 'CLAYTON', postcode: '3168', state: 'VIC', country: 'AU',
+    });
+    expect(imported.phone).toBe('0412345678');
+  });
+
   it('importProfile falls back to the caller-supplied state when the address state is empty', async () => {
     const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({
       '/profile/v1/addresses': { ok: true, status: 200, data: [ { line1: '1 Bourke St', suburb: 'Melbourne', postcode: '3000', state: '' } ] },

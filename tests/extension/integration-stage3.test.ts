@@ -18,7 +18,7 @@ import { rm } from 'node:fs/promises';
 import type { Browser, Page } from 'puppeteer-core';
 import {
   RetailerFixture, assertExtensionBuilt, PRODUCT_CODE,
-  launchExtensionBrowser, makeTemporaryDir, profile, testCard, waitForBridgePing, findOrOpenAppTab,
+  launchExtensionBrowser, makeTemporaryDir, profile, testCard, waitForBridgePing, findOrOpenAppTab, keepOnlyAppTab,
 } from './fixture-retailer.ts';
 
 // The link the foreign page points at; the fixture answers code 6071620. It has
@@ -226,6 +226,7 @@ beforeEach(async () => {
   await workPage.goto('https://www.bigw.com.au/', { waitUntil: 'load' });
   await foreignPage.goto(foreignUrl, { waitUntil: 'load' });
   await appPage.goto(`chrome-extension://${extensionId}/app.html`, { waitUntil: 'domcontentloaded' });
+  await keepOnlyAppTab(browser, appPage, extensionId);
   await appPage.waitForSelector('#field-quantity', { timeout: 20_000 });
 }, 60_000);
 
@@ -302,7 +303,8 @@ describe('extension stage-3 integration', () => {
     await appPage.evaluate(async (url) => { await chrome.runtime.sendMessage({ type: 'trigger.checkout', url }); }, FOREIGN_PRODUCT_URL).catch(() => undefined);
 
     // openAppPage re-points the existing app tab at app.html?onboarding=1&product=…
-    await appPage.waitForFunction(() => location.search.includes('onboarding=1'), { timeout: 20_000, polling: 200 });
+    await appPage.waitForFunction(() => location.search.includes('onboarding=1'), { timeout: 20_000, polling: 200 })
+      .catch(async (error: unknown) => { throw new Error(`onboarding URL never appeared; tab is ${appPage.url()} - ${String(error).slice(0, 120)}`); });
     const landed = new URL(appPage.url());
     expect(landed.pathname.endsWith('/app.html')).toBe(true);
     expect(landed.searchParams.get('onboarding')).toBe('1');
