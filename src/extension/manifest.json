@@ -13,6 +13,12 @@
     "https://portal.afterpay.com/*"
   ],
   "background": { "service_worker": "background.js", "type": "module" },
+  "commands": {
+    "duke-checkout": {
+      "suggested_key": { "default": "Alt+Shift+D" },
+      "description": "Duke: checkout the last product link"
+    }
+  },
   "action": { "default_title": "Duke Checkout", "default_popup": "app.html?popup=1" },
   "options_page": "app.html",
   "content_scripts": [

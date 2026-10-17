@@ -6,8 +6,10 @@ import { registerKeeper } from './keeper.ts';
 import { BigWExtensionAdapter } from '../lib/retailers/bigw/adapter.ts';
 import { RunManager } from './run-manager.ts';
 import { driverHandleFor } from './driver.ts';
+import { setBadge, badgeStateForRun } from './badge.ts';
+import { configureTriggers, registerContextMenus, registerCommands, registerAutoArm, dispatchTrigger, armProduct, setLastHovered } from './triggers.ts';
 import { AppError, publicError } from '../../server/errors.ts';
-import type { ArmedCheckout } from '../../shared/types.ts';
+import type { ArmedCheckout, RunRequest } from '../../shared/types.ts';
 
 // The armed checkout, mirrored from chrome.storage.session into memory so the
 // adapter's synchronous armedState() can answer the RunManager's fast-path
@@ -34,17 +36,27 @@ const adapter = new BigWExtensionAdapter(
 // The RunManager is a module singleton. init() loads history and runs the
 // server's interrupted-run recovery; it runs exactly once (memoized promise)
 // even though a freshly-spawned service worker re-evaluates this module.
-const manager = new RunManager(adapter);
+// The update hook drives the toolbar badge (sendMessage does not self-deliver).
+const manager = new RunManager(adapter, run => setBadge(badgeStateForRun(run)));
 let managerInit: Promise<void> | null = null;
 function initManager(): Promise<void> {
   return (managerInit ??= (async () => {
     // Hydrate the armed cache once. A storage failure must never block the
     // service worker from starting; the cache simply stays null.
     try { armedCache = await getArmed(); } catch { armedCache = null; }
+    setBadge(armedCache ? 'armed' : 'idle');
     await manager.init();
   })());
 }
 void initManager();
+
+// Trigger surface: context-menu items, the keyboard command, and auto-arm on
+// product-page load all funnel through the same dispatch/plan. Injected with
+// the singletons above so armed state stays in one place.
+configureTriggers({ adapter, manager });
+registerContextMenus();
+registerCommands();
+registerAutoArm();
 
 // Session keeper: a chrome.alarms beat wakes the sleeping service worker; when
 // an armed state exists and the page's token nears expiry, the work tab reloads
@@ -121,15 +133,15 @@ async function handle(request: DukeRequest): Promise<unknown> {
       return await adapter.inspect(productUrl, profile);
     }
     case 'arm.start': {
-      const input = request.payload as never;
-      // No cancellation path in stage 1; signal satisfies the interface.
-      // arm() publishes the result through the adapter's injected store, which
-      // updates armedCache and session storage together.
-      const armed = await adapter.arm(input, () => undefined, new AbortController().signal);
-      broadcast({ type: 'arm.update', payload: armed });
+      // Shared with every trigger path: armProduct builds/passes the request,
+      // calls the adapter (which publishes into the armed store + session
+      // storage), and broadcasts arm.update.
+      const input = request.payload as RunRequest;
+      const armed = await armProduct(input.productUrl, input);
+      setBadge('armed');
       return armed;
     }
-    case 'arm.clear': adapter.disarm(); broadcast({ type: 'arm.update', payload: null }); return { ok: true };
+    case 'arm.clear': adapter.disarm(); broadcast({ type: 'arm.update', payload: null }); setBadge('idle'); return { ok: true };
     case 'arm.get': return armedCache;
     case 'run.start':
       await ensureAppPage();
@@ -175,3 +187,18 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => { console.log('[duke] installed'); });
+
+// Trigger intents from content scripts (link-scout hover chip) and the page.
+// These carry no request id, so they are separate from the RPC listener above.
+// trigger.hovered only remembers the link under the pointer for the command;
+// trigger.checkout/arm run the same dispatch the menu and command use.
+chrome.runtime.onMessage.addListener((raw: unknown, sender) => {
+  const message = raw as { type?: string; url?: string } | null;
+  if (!message || typeof message.type !== 'string') return false;
+  if (message.type === 'trigger.checkout' || message.type === 'trigger.arm') {
+    void dispatchTrigger(message.type === 'trigger.arm' ? 'arm' : 'checkout', typeof message.url === 'string' ? message.url : '', sender.tab?.id).catch(() => undefined);
+  } else if (message.type === 'trigger.hovered' && sender.tab?.id !== undefined && typeof message.url === 'string') {
+    setLastHovered(sender.tab.id, message.url);
+  }
+  return false;
+});

@@ -211,6 +211,7 @@ export function handleMouseOver(event: Event): void {
   if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
   currentAnchor = anchor;
   currentUrl = url;
+  reportHover(url);
   if (showTimer) clearTimeout(showTimer);
   showTimer = setTimeout(() => { showTimer = null; showChip(); }, SHOW_DELAY_MS);
 }
@@ -230,6 +231,21 @@ function sendTrigger(type: string, url: string): void {
     if (typeof chrome === 'undefined' || !chrome.runtime?.id) return;
     void chrome.runtime.sendMessage({ type, url })?.catch?.(() => undefined);
   } catch { /* service worker unavailable */ }
+}
+
+// Report the link under the pointer so the service worker's keyboard command
+// can target it. Throttled to at most one report per URL per 500 ms so a fast
+// pointer sweep does not flood the channel.
+let lastHoverUrl = '';
+let lastHoverAt = 0;
+const HOVER_REPORT_THROTTLE_MS = 500;
+
+function reportHover(url: string): void {
+  const now = Date.now();
+  if (url === lastHoverUrl && now - lastHoverAt < HOVER_REPORT_THROTTLE_MS) return;
+  lastHoverUrl = url;
+  lastHoverAt = now;
+  sendTrigger('trigger.hovered', url);
 }
 
 function trigger(type: 'trigger.checkout' | 'trigger.arm'): void {
@@ -256,6 +272,8 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
 function reset(): void {
   hideChip();
   settings = null;
+  lastHoverUrl = '';
+  lastHoverAt = 0;
 }
 
 export const __test = {

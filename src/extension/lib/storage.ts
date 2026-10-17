@@ -22,6 +22,11 @@ async function localGet<T>(key: string): Promise<T | undefined> {
 }
 async function localSet(key: string, value: unknown): Promise<void> { await chrome.storage.local.set({ [key]: value }); }
 
+async function sessionGet<T>(key: string): Promise<T | undefined> {
+  const items = await chrome.storage.session.get([key]);
+  return items[key] as T | undefined;
+}
+
 export async function getSettings(): Promise<DukeSettings> {
   const merged = { ...DEFAULT_SETTINGS, ...await localGet<Partial<DukeSettings>>(SETTINGS_KEY) };
   const parsed = settingsSchema.safeParse(merged);
@@ -58,4 +63,24 @@ export async function saveRuns(runs: CheckoutRun[]): Promise<void> {
 // Upsert-by-id append used by remaining callers; retention decides what is kept.
 export async function pushRun(run: CheckoutRun): Promise<void> {
   await saveRuns([run, ...(await getHistory()).filter(item => item.id !== run.id)]);
+}
+
+// --- one-run session card ---------------------------------------------------
+// Card material captured for the single checkout run that needs it. It lives
+// ONLY in chrome.storage.session (never storage.local) so it is wiped when the
+// browser session ends and never persists alongside settings/history.
+export interface SessionCard { number: string; expiry: string; cvv: string }
+
+const CARD_KEY = 'dukeCard';
+
+export async function getSessionCard(): Promise<SessionCard | null> {
+  const stored = await sessionGet<SessionCard>(CARD_KEY);
+  if (!stored || typeof stored.number !== 'string' || typeof stored.expiry !== 'string' || typeof stored.cvv !== 'string') return null;
+  return { number: stored.number, expiry: stored.expiry, cvv: stored.cvv };
+}
+export async function putSessionCard(card: SessionCard): Promise<void> {
+  await chrome.storage.session.set({ [CARD_KEY]: { number: card.number, expiry: card.expiry, cvv: card.cvv } });
+}
+export async function clearSessionCard(): Promise<void> {
+  await chrome.storage.session.remove([CARD_KEY]);
 }

@@ -59,7 +59,10 @@ export class RunManager {
   private runs: CheckoutRun[] = [];
   private active?: { id: string; controller: AbortController };
   private jobs = new Map<string, Promise<CheckoutRun>>();
-  constructor(private adapter: RunAdapter) {}
+  // Optional in-process observer. chrome.runtime.sendMessage does not deliver
+  // to the sender, so the service worker cannot hear its own run.update
+  // broadcasts; this hook lets it (e.g. the toolbar badge) react directly.
+  constructor(private adapter: RunAdapter, private onUpdate?: (run: CheckoutRun) => void) {}
 
   get activeRunId(): string | null { return this.active?.id ?? null; }
 
@@ -112,6 +115,7 @@ export class RunManager {
     run.updatedAt = new Date().toISOString();
     run.elapsedMs = Math.max(0, Date.now() - Date.parse(run.startedAt));
     broadcast({ type: 'run.update', payload: sanitizeRun(run) });
+    try { this.onUpdate?.(sanitizeRun(run)); } catch { /* observer must not break a run */ }
     this.persistState();
   }
   private report(run: CheckoutRun, stage: Stage, message: string): void {

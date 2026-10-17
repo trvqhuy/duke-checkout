@@ -228,6 +228,7 @@ describe('triggers', () => {
     const anchor = makeAnchor(PRODUCT);
     hover(anchor);
     await vi.advanceTimersByTimeAsync(200);
+    sendMessage.mockClear();
     chipButton('.duke-chip-checkout')?.click();
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -242,11 +243,28 @@ describe('triggers', () => {
     const anchor = makeAnchor(PRODUCT);
     hover(anchor);
     await vi.advanceTimersByTimeAsync(200);
+    sendMessage.mockClear();
     chipButton('.duke-chip-arm')?.click();
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith({ type: 'trigger.arm', url: PRODUCT });
     expect(__test.chipVisible()).toBe(false);
+  });
+
+  it('reports a hovered product link for the command, throttled per URL', async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
+    const anchor = makeAnchor(PRODUCT);
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'trigger.hovered', url: PRODUCT });
+
+    // A second hover on the same URL within the throttle window is suppressed.
+    sendMessage.mockClear();
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it('does not send when the runtime id is unavailable', async () => {
