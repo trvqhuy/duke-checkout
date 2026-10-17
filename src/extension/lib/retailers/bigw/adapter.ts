@@ -266,8 +266,12 @@ export class BigWExtensionAdapter implements RetailerAdapter {
   // delivery address (and cart.customer for the recipient); the extension has no
   // page context for a cart, so the cart read is skipped and the primary address
   // (or the first) is used. With no cart payload `cart.customer` is empty on the
-  // server too, so the remaining fallbacks are unchanged.
-  async importProfile(): Promise<{ profile: Profile; savedCards: SavedCard[] }> {
+  // server too, so the remaining fallbacks are unchanged. The server's
+  // `|| context.delivery?.state` fallback also needs page context, which the
+  // extension lacks; the service worker therefore passes the stored profile's
+  // delivery state as `fallbackState`, keeping an empty address state from
+  // silently poisoning a later run.
+  async importProfile(fallbackState?: string): Promise<{ profile: Profile; savedCards: SavedCard[] }> {
     const handle = await this.acquire();
     const [addressesData, accountData, cards] = await Promise.all([
       this.req(handle, '/profile/v1/addresses'),
@@ -280,7 +284,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     const name = record(account.name), phone = record(account.phone);
     const normalize = (value: Record<string, unknown>): Address => ({
       line1: string(value.line1), line2: string(value.line2), suburb: string(value.suburb, string(value.town)),
-      postcode: string(value.postcode), state: string(value.state).replace('AU-', ''), country: 'AU',
+      postcode: string(value.postcode), state: string(value.state).replace('AU-', '') || fallbackState || '', country: 'AU',
     });
     return { profile: {
       name: 'BIG W delivery', firstName: string(address.firstName, string(name.given)),

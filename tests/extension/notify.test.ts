@@ -6,7 +6,7 @@ const created: Array<{ id: string; options: Record<string, unknown> }> = [];
 const clickHandlers: Array<() => void> = [];
 const openedTabs: string[] = [];
 
-// notify.ts pulls triggers.ts for openAppPage; neither touches chrome at module
+// notify.ts pulls app-page.ts for openAppPage; neither touches chrome at module
 // evaluation, so this stub can be installed after the imports (same as
 // triggers.test.ts).
 (globalThis as Record<string, unknown>).chrome = {

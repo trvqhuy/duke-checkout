@@ -143,7 +143,12 @@ async function handle(request: DukeRequest): Promise<unknown> {
     case 'settings.put': return await putSettings(request.payload as never);
     case 'profile.get': return await getProfile();
     case 'profile.put': return await putProfile(request.payload as never);
-    case 'profile.import': return await adapter.importProfile();
+    case 'profile.import': {
+      // The extension has no BIG W page context, so the address-state fallback
+      // (server: context.delivery?.state) comes from the stored profile instead.
+      const existing = await getProfile();
+      return await adapter.importProfile(existing?.deliveryAddress.state);
+    }
     // Card material stays behind the service worker: the app page never touches
     // chrome.storage.session directly for the one-run card.
     case 'card.session.put': { await putSessionCard(request.payload as SessionCard); return { ok: true }; }

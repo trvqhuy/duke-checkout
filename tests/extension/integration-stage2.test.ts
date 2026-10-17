@@ -87,11 +87,14 @@ async function prepareForm(mode: 'purchase' | 'assist', budget = '25.00'): Promi
   }, { timeout: 15_000, polling: 150 });
 }
 
-async function storageDump(): Promise<string> {
-  return appPage.evaluate(async () => JSON.stringify({
-    local: await chrome.storage.local.get(null),
-    session: await chrome.storage.session.get(null),
-  }));
+async function storageDump(): Promise<{ local: string; session: string }> {
+  return appPage.evaluate(async () => {
+    const dump = (value: unknown) => JSON.stringify(value);
+    return {
+      local: dump(await chrome.storage.local.get(null)),
+      session: dump(await chrome.storage.session.get(null)),
+    };
+  });
 }
 
 beforeAll(async () => {
@@ -156,12 +159,15 @@ describe('extension stage-2 integration', () => {
     const run = runs.find(item => item.id === runId)!;
     expect(run).toMatchObject({ status: 'succeeded', orderNumber: 'ORD-1' });
 
-    // No card material lingers in either storage area (the run keeps the card in
-    // its in-memory payload only; sanitizeRun strips it from history/session).
+    // Card material must NEVER reach durable storage.local (it holds settings,
+    // profile, and history). storage.session MAY hold `dukeCard` by design: the
+    // remember-default-on one-click flow keeps the card for the browser session,
+    // cleared on browser close or after a terminal run when cardClearAfterOrder
+    // is set. So only the durable store is asserted to be free of card material.
     const dump = await storageDump();
-    for (const secret of CARD_PATHS) expect(dump).not.toContain(secret);
-    expect(dump).not.toContain('"cvv"');
-    expect(dump.toLowerCase()).not.toContain('securitycode');
+    for (const secret of CARD_PATHS) expect(dump.local).not.toContain(secret);
+    expect(dump.local).not.toContain('"cvv"');
+    expect(dump.local.toLowerCase()).not.toContain('securitycode');
 
     expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
   }, 120_000);

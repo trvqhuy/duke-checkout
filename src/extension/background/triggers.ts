@@ -11,8 +11,9 @@
 // register/step function so importing this module is side-effect free.
 // ---------------------------------------------------------------------------
 import { getSettings, getProfile, getSessionCard, type DukeSettings } from '../lib/storage.ts';
-import { isProductUrl } from '../content/link-scout.ts';
+import { isProductUrl } from '../lib/product-url.ts';
 import { isEvent } from '../lib/protocol.ts';
+import { configureAppPage, ensureAppPage, openAppPage } from './app-page.ts';
 import { getArmed } from './state.ts';
 import { NOTIFICATION_ICON } from './notify.ts';
 import type { ArmedCheckout, RunRequest, StageReporter } from '../../shared/types.ts';
@@ -81,11 +82,16 @@ export function scheduleAutoArm(tabId: number, run: () => void, delay = AUTO_ARM
 // its own copies. Keeping the dependencies behind a small interface lets tests
 // import the pure helpers without a chrome runtime.
 export interface TriggerArm { arm(input: RunRequest, report: StageReporter, signal: AbortSignal): Promise<ArmedCheckout> }
-export interface TriggerRun { start(payload: unknown): Promise<unknown> }
+export interface TriggerRun { start(payload: unknown): Promise<unknown>; activeRunId?: string | null }
 export interface TriggerDeps { adapter: TriggerArm; manager: TriggerRun }
 
 let deps: TriggerDeps | null = null;
-export function configureTriggers(next: TriggerDeps): void { deps = next; }
+export function configureTriggers(next: TriggerDeps): void {
+  deps = next;
+  // openAppPage must not reload an existing app tab mid-run, so it asks the same
+  // manager the triggers use whether a run is active.
+  configureAppPage({ activeRunId: () => next.manager.activeRunId ?? null });
+}
 function requireDeps(): TriggerDeps {
   if (!deps) throw new Error('Trigger handlers are not configured.');
   return deps;
@@ -97,8 +103,8 @@ function broadcast(event: { type: string; payload: unknown }): void {
 }
 
 // The icon lives in notify.ts so the hint and the outcome notifications share
-// one mark. notify.ts imports openAppPage from here, so this is a module cycle
-// with all uses deferred (inside functions), which ESM resolves safely.
+// one mark (a one-way import). openAppPage now lives in app-page.ts, so there
+// is no triggers <-> notify module cycle.
 function notifyHint(message: string): void {
   try {
     void chrome.notifications.create({
@@ -129,41 +135,6 @@ export async function armProduct(url: string, provided?: RunRequest): Promise<Ar
   const armed = await adapter.arm(input, () => undefined, new AbortController().signal);
   broadcast({ type: 'arm.update', payload: armed });
   return armed;
-}
-
-// --- app page routing -------------------------------------------------------
-export function appUrlFor(query: Record<string, string> = {}): string {
-  const base = chrome.runtime.getURL('app.html');
-  const search = new URLSearchParams(query).toString();
-  return search ? `${base}?${search}` : base;
-}
-
-async function findAppTabId(): Promise<number | null> {
-  const base = chrome.runtime.getURL('app.html');
-  try {
-    const contexts = await chrome.runtime.getContexts({ contextTypes: ['TAB'] });
-    const match = contexts.find(context => (context.documentUrl ?? '').startsWith(base));
-    if (match && typeof match.tabId === 'number' && match.tabId !== chrome.tabs.TAB_ID_NONE) return match.tabId;
-  } catch { /* getContexts is Chrome 116+; fall through to the tab query */ }
-  try {
-    const tabs = await chrome.tabs.query({ url: `${base}*` });
-    return tabs[0]?.id ?? null;
-  } catch { return null; }
-}
-
-// Focus an existing app page (idempotently re-pointing it at the requested
-// query) or open a new one. Query params carry product/onboarding intent.
-export async function openAppPage(query: Record<string, string> = {}): Promise<void> {
-  const url = appUrlFor(query);
-  const tabId = await findAppTabId();
-  if (tabId !== null) { await chrome.tabs.update(tabId, { url, active: true }).catch(() => undefined); return; }
-  await chrome.tabs.create({ url, active: true }).catch(() => undefined);
-}
-
-// A run needs an app page open so its `duke-run` port keeps the worker alive.
-async function ensureAppPage(): Promise<void> {
-  if (await findAppTabId() !== null) return;
-  await chrome.tabs.create({ url: chrome.runtime.getURL('app.html'), active: false }).catch(() => undefined);
 }
 
 // --- dispatch ---------------------------------------------------------------

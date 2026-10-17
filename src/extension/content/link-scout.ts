@@ -21,11 +21,11 @@
 // untouched.
 // ---------------------------------------------------------------------------
 
-export const PRODUCT_URL = /^https?:\/\/(www\.)?bigw\.com\.au\/product\/[^/]+\/p\/\d+/;
-
-export function isProductUrl(url: string): boolean {
-  return typeof url === 'string' && PRODUCT_URL.test(url);
-}
+// The product-link predicate lives in lib/ so the service worker can import it
+// without pulling in this content script; re-exported here to keep the chip's
+// existing surface (and the __test export below) intact.
+import { isProductUrl } from '../lib/product-url.ts';
+export { isProductUrl } from '../lib/product-url.ts';
 
 interface ScoutSettings { hoverChip: boolean }
 const DEFAULT_SETTINGS: ScoutSettings = { hoverChip: true };

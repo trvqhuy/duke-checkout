@@ -155,4 +155,14 @@ describe('BigWExtensionAdapter', () => {
     // No cart path is requested: the stub throws on any unexpected path.
     expect([...called].sort()).toEqual(['/profile/v1/addresses', '/profile/v1/profile', '/storefront/v1/cart/saved-cards']);
   });
+
+  it('importProfile falls back to the caller-supplied state when the address state is empty', async () => {
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({
+      '/profile/v1/addresses': { ok: true, status: 200, data: [ { line1: '1 Bourke St', suburb: 'Melbourne', postcode: '3000', state: '' } ] },
+      '/profile/v1/profile': { ok: true, status: 200, data: {} },
+      '/storefront/v1/cart/saved-cards': { ok: true, status: 200, data: [] },
+    }) }));
+    const { profile: imported } = await adapter.importProfile('VIC');
+    expect(imported.deliveryAddress.state).toBe('VIC');
+  });
 });

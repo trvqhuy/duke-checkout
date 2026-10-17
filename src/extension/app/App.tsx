@@ -170,8 +170,10 @@ export default function App() {
     });
   }
   // Store the entered card in chrome.storage.session so later one-click runs can
-  // use it without the form.
+  // use it without the form. Honours the remember checkbox: when the user
+  // unticked it, nothing is written and one-click runs ask for the card each time.
   async function rememberSessionCard() {
+    if (!rememberCard) return;
     await run('remember', async () => {
       const stored = { number: card.number, expiry: card.expiry, cvv: card.cvv };
       await request('card.session.put', stored);
@@ -266,8 +268,9 @@ export default function App() {
           {importedCount !== null && <p className="fine-print">Imported {importedCount} saved {importedCount === 1 ? 'card' : 'cards'} from your BIG W account.</p>}
           <PaymentFields card={card} setCard={setCard} cards={cards} errors={{}} refresh={() => void refreshCards()} refreshing={busy === 'cards'} />
           <label className="check-row"><input type="checkbox" checked={rememberCard} onChange={event => setRememberCard(event.target.checked)} /><span>Remember this card for this browser session</span></label>
+          {!rememberCard && <p className="fine-print">One-click runs will ask for the card each time.</p>}
           <div className="summary-actions">
-            <button type="button" className="secondary-button" onClick={() => void rememberSessionCard()} disabled={disabled || !cardComplete}>{busy === 'remember' ? 'Saving…' : 'Save card for one-click runs'}</button>
+            <button type="button" className="secondary-button" onClick={() => void rememberSessionCard()} disabled={disabled || !cardComplete || !rememberCard}>{busy === 'remember' ? 'Saving…' : 'Save card for one-click runs'}</button>
             <button type="button" className="primary-button" onClick={finishSetup}>Finish setup</button>
           </div>
         </section>}
@@ -319,6 +322,7 @@ export default function App() {
             ? <>
                 <PaymentFields card={card} setCard={setCard} cards={cards} errors={{}} refresh={() => void refreshCards()} refreshing={busy === 'cards'} />
                 {card.kind === 'new' && <label className="check-row"><input type="checkbox" checked={rememberCard} onChange={event => setRememberCard(event.target.checked)} /><span>Remember this card for this browser session</span></label>}
+                {card.kind === 'new' && !rememberCard && <p className="fine-print">One-click runs will ask for the card each time.</p>}
               </>
             : <div className="prepare-note"><Icon name="lock" size={16} /><p>{mode === 'afterpay' ? 'No card needed. Duke prepares the cart, selects Afterpay, and opens Afterpay’s checkout for you to sign in and confirm.' : 'No card details needed. Duke prepares the cart, applies your details, and opens the secure payment step.'}</p></div>}
           <div className="summary-actions">

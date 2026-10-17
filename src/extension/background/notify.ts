@@ -10,9 +10,10 @@
 //
 // The icon is a 128x128 PNG inlined as a data URL: no icon asset has to ship
 // with the extension. It is defined once here and re-exported so the trigger
-// hints use the same mark.
+// hints use the same mark. openAppPage comes from app-page.ts (not triggers.ts),
+// so this module no longer forms a cycle with the trigger surface.
 // ---------------------------------------------------------------------------
-import { openAppPage } from './triggers.ts';
+import { openAppPage } from './app-page.ts';
 import type { CheckoutRun } from '../../shared/types.ts';
 
 // Export shape of every notification body.
