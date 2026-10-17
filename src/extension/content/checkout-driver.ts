@@ -172,6 +172,12 @@ export function onMessage(
   sendResponse: (response?: unknown) => void,
 ): boolean {
   const result = handle(message);
+  // Not a driver message: stay silent so the isolated bridge (injected in the
+  // same frame on /checkout/*) remains the sole responder. Calling
+  // sendResponse(undefined) here would win the race for bridge.request /
+  // bridge.control — Chrome takes the first sendResponse — and starve the
+  // bridge that the run depends on.
+  if (result === undefined) return false;
   if (result && typeof (result as Promise<unknown>).then === 'function') {
     void (result as Promise<unknown>).then(sendResponse, () => sendResponse(undefined));
     return true; // keep the channel open for the async reply
