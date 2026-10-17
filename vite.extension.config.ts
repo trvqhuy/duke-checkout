@@ -10,7 +10,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 // statements) dies with "Unexpected token 'export'" when the manifest injects
 // it. Every manifest content script therefore ships as a standalone IIFE
 // bundle built by esbuild instead of vite's ES chunks.
-const bridgeContentScripts = ['api-bridge-main', 'api-bridge-isolated', 'link-scout'];
+const bridgeContentScripts = ['api-bridge-main', 'api-bridge-isolated', 'link-scout', 'checkout-driver'];
 
 export default defineConfig({
   publicDir: false,
