@@ -13,7 +13,7 @@
 import { getSettings, getProfile, getSessionCard, type DukeSettings } from '../lib/storage.ts';
 import { isProductUrl } from '../lib/product-url.ts';
 import { isEvent } from '../lib/protocol.ts';
-import { configureAppPage, openAppPage } from './app-page.ts';
+import { configureAppPage } from './app-page.ts';
 import { getArmed } from './state.ts';
 import { setBadge } from './badge.ts';
 import { NOTIFICATION_ICON } from './notify.ts';
@@ -162,40 +162,45 @@ export async function dispatchTrigger(action: TriggerAction, url: string, _tabId
   const hasCard = !!card;
   const plan = triggerPlan({ settings, hasProfile: !!profile, hasCard }, action);
 
-  if (plan === 'open-onboarding') { await openAppPage({ onboarding: '1', product: url }); return; }
+  if (plan === 'open-onboarding') {
+    // Never hijack the screen: tell the user what is missing. Clicking the
+    // notification opens Duke (notify.ts handles onClicked).
+    notifyHint('Finish Duke setup first: click this notification to import your BIG W details.');
+    return;
+  }
   if (plan === 'open-app') {
-    // triggerPlan returns 'open-app' for two reasons: confirm-before-pay wants
-    // the user to review, or a card-mode has no card. Only the missing-card case
-    // needs the setup panel, so the user can enter a card; a review keeps the
-    // plain product hand-off.
-    if (!settings.confirmBeforePay && modeNeedsCard(settings.mode) && !card) {
-      await openAppPage({ onboarding: '1', product: url }); return;
+    if (settings.confirmBeforePay) {
+      // Review in the real checkout instead of the app page: fill the card and
+      // let the user press Pay themselves.
+      await startRun('assist'); return;
     }
-    await openAppPage({ product: url }); return;
+    notifyHint('No card saved for this browser session. Click this notification to open Duke and add one.');
+    return;
   }
   if (plan === 'arm') {
     try { await armProduct(url); }
     catch (error) { console.warn('[duke] arm trigger failed', error); notifyHint(error instanceof Error ? error.message : 'Could not arm this product right now.'); }
     return;
   }
+  await startRun(settings.mode);
 
-  // plan === 'start'. triggerPlan already returned 'open-app' when a required
-  // card is missing, so this guard only matters if the inputs changed under us.
-  const needsCard = modeNeedsCard(settings.mode);
-  if (needsCard && !card) { await openAppPage({ product: url }); return; }
-  // No app page: a configured chip checkout runs entirely in the background and
-  // only surfaces the BIG W checkout tab when the run reaches it.
-  await manager.start({
-    requestId: crypto.randomUUID(),
-    productUrl: url,
-    quantity: settings.quantity,
-    // validateRun (the RunManager's gate) takes `maxTotal` in dollars; it
-    // converts to cents itself.
-    maxTotal: settings.maxTotalAUD,
-    mode: settings.mode,
-    profile,
-    card: needsCard && card ? { kind: 'new', number: card.number, expiry: card.expiry, cvv: card.cvv } : undefined,
-  });
+  async function startRun(mode: typeof settings.mode): Promise<void> {
+    const needsCard = modeNeedsCard(mode);
+    if (needsCard && !card) { notifyHint('No card saved for this browser session. Click this notification to open Duke and add one.'); return; }
+    // Background run: no app page. Only the BIG W checkout tab becomes visible
+    // (the adapter reveals it as a fresh active tab when the run reaches it).
+    await manager.start({
+      requestId: crypto.randomUUID(),
+      productUrl: url,
+      quantity: settings.quantity,
+      // validateRun (the RunManager's gate) takes `maxTotal` in dollars; it
+      // converts to cents itself.
+      maxTotal: settings.maxTotalAUD,
+      mode,
+      profile,
+      card: needsCard && card ? { kind: 'new', number: card.number, expiry: card.expiry, cvv: card.cvv } : undefined,
+    });
+  }
 }
 
 // Every non-UI entry point (chip, menu, command, SW message) goes through this
@@ -209,7 +214,6 @@ export async function dispatchTriggerSafely(action: TriggerAction, url: string, 
     const issue = publicError(error);
     const detail = issue.fields ? Object.values(issue.fields).join(' ') : '';
     notifyHint(`${issue.message} ${detail}`.trim());
-    if (isProductUrl(url)) await openAppPage({ product: url }).catch(() => undefined);
   }
 }
 
