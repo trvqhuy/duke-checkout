@@ -41,7 +41,11 @@ async function waitForComplete(tabId: number, timeoutMs: number): Promise<void> 
 // exist" even though the page is fine. Reload it once so the bridge re-injects,
 // then wait for it to answer. Runs self-heal after an update instead of failing.
 export async function ensureBridge(tabId: number): Promise<void> {
-  if (await pingBridge(tabId, 2_500)) return;
+  // A tab that is still loading has simply not injected its content scripts
+  // yet: wait for it before concluding the bridge is stale.
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (tab?.status === 'loading') await waitForComplete(tabId, 20_000);
+  if (await pingBridge(tabId, 6_000)) return;
   console.log('[duke] work tab has no live bridge; reloading it');
   await chrome.tabs.reload(tabId).catch(() => undefined);
   await waitForComplete(tabId, 30_000);
