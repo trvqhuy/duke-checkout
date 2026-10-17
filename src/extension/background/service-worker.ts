@@ -1,6 +1,6 @@
 import { decodeRequest, encodeResponse, isEvent, type DukeRequest } from '../lib/protocol.ts';
 import { getSettings, putSettings, getProfile, putProfile, getHistory, getSessionCard, putSessionCard, clearSessionCard, DEFAULT_SETTINGS, type SessionCard } from '../lib/storage.ts';
-import { acquireWorkTab, waitForBridgeReady } from './work-tab.ts';
+import { acquireWorkTab, ensureBridge } from './work-tab.ts';
 import { getArmed, setArmed, clearArmed } from './state.ts';
 import { registerKeeper } from './keeper.ts';
 import { BigWExtensionAdapter } from '../lib/retailers/bigw/adapter.ts';
@@ -41,7 +41,7 @@ const adapter = new BigWExtensionAdapter(
   async () => {
     const tab = await acquireWorkTab();
     if (!tab.id) throw new AppError('BRIDGE_UNREADY', 'No BIG W tab is available. Open bigw.com.au once.');
-    await waitForBridgeReady(tab.id);
+    await ensureBridge(tab.id);
     return { tabId: tab.id, sender: { sendMessage: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg as never) }, driver: driverHandleFor(tab.id, undefined, guardEventsFor) };
   },
   {
