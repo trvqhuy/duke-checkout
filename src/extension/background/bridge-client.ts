@@ -10,6 +10,22 @@ const MESSAGES: Record<string, string> = {
 };
 
 export async function bridgeRequest(sender: Sender, tabId: number, args: unknown, timeoutMs = 30_000): Promise<unknown> {
+  // A work tab that was just reloaded (for example by the stale-bridge heal)
+  // briefly has no receiver. That is transient, so retry before failing a run.
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await bridgeRequestOnce(sender, tabId, args, timeoutMs); }
+    catch (error) {
+      lastError = error;
+      const code = (error as { code?: string } | null)?.code;
+      if (code !== 'BRIDGE_NO_RESPONSE' || attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 300 + attempt * 400));
+    }
+  }
+  throw lastError;
+}
+
+async function bridgeRequestOnce(sender: Sender, tabId: number, args: unknown, timeoutMs: number): Promise<unknown> {
   let result: { ok: boolean; status: number; data?: unknown; code?: string } | null;
   // Settle timer: cleared when the race settles (either way), so a won race
   // does not leave a dangling timer holding the process open.

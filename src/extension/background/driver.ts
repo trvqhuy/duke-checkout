@@ -44,7 +44,10 @@ function driverTimeout(reason: string): AppError {
 // in-memory event list lives in the worker.
 export type GuardEventProvider = (tabId: number) => GuardEventRecord[];
 
-export function driverHandleFor(tabId: number, timeoutMs = DEFAULT_TIMEOUT_MS, guardEventProvider?: GuardEventProvider): DriverHandle {
+export function driverHandleFor(initialTabId: number, timeoutMs = DEFAULT_TIMEOUT_MS, guardEventProvider?: GuardEventProvider): DriverHandle {
+  // The handle can adopt a new tab: a run prepares in the background work tab,
+  // then reveals the checkout in a fresh active tab and keeps driving that one.
+  let tabId = initialTabId;
   async function call(message: unknown, frameId?: number): Promise<unknown> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -82,6 +85,14 @@ export function driverHandleFor(tabId: number, timeoutMs = DEFAULT_TIMEOUT_MS, g
     async observeClear() { await control({ kind: 'observe.clear' }); },
     async guardEnable(binding) { await control({ kind: 'guard.enable', binding }); },
     async guardDisable() { await control({ kind: 'guard.disable' }); },
+    async openCheckoutTab(url) {
+      const tab = await chrome.tabs.create({ url, active: true });
+      if (typeof tab.id !== 'number') throw driverTimeout('new tab');
+      tabId = tab.id;
+      // Wait until the checkout page's bridge answers so the first driver
+      // message is not lost while the page boots.
+      await new Promise(resolve => setTimeout(resolve, 300));
+    },
     async guardEvents() { return guardEventProvider?.(tabId) ?? []; },
     async antiFraud() { return await control({ kind: 'observe.antiFraud' }) as { fingerprint: string }; },
   };

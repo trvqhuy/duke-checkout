@@ -20,6 +20,7 @@ export interface DriverHandle {
   sendTop(message: unknown): Promise<unknown>;
   sendFrame(frameId: number, message: unknown): Promise<unknown>;
   navigate(url: string): Promise<void>;
+  openCheckoutTab(url: string): Promise<void>;
   activate(): Promise<void>;
   url(): Promise<string>;
   observe(): Promise<{ entries: ObservedEntry[] }>;

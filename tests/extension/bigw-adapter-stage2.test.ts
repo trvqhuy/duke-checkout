@@ -40,6 +40,7 @@ function makeDriver(options: DriverOptions = {}) {
   const values: Record<string, string> = { ...(options.values ?? {}) };
   const reads = { count: 0 };
   const calls = {
+      checkoutTabs: [] as string[],
     top: [] as Array<{ type?: string }>,
     frame: [] as Array<{ frameId: number; message: { type?: string; value?: unknown } }>,
     navigations: [] as string[],
@@ -79,6 +80,8 @@ function makeDriver(options: DriverOptions = {}) {
       return {};
     },
     navigate: async (url: string) => { calls.navigations.push(url); },
+
+    openCheckoutTab: async (url: string) => { calls.checkoutTabs.push(url); },
     activate: async () => { calls.activate++; },
     url: async () => options.url ?? 'https://www.bigw.com.au/checkout/delivery',
     observe: async () => ({ entries: typeof options.observe === 'function' ? options.observe() : (options.observe ?? []) }),
@@ -364,12 +367,13 @@ describe('BigWExtensionAdapter stage 2 — revealPrepared', () => {
     expect(reports[0]).toContain('already open');
   });
 
-  it('navigates, activates, clears any guard, and waits for a fresh checkout', async () => {
+  it('opens a fresh active checkout tab, clears any guard, and waits for it', async () => {
     const { adapter, calls } = setup({ url: 'https://www.bigw.com.au/' });
     const reports: string[] = [];
     await adapter.revealPrepared(prepared, (_stage, message) => reports.push(message), new AbortController().signal);
-    expect(calls.navigations).toEqual(['https://www.bigw.com.au/checkout/delivery']);
-    expect(calls.activate).toBe(1);
+    // The background run surfaces only the BIG W checkout tab (never the app page).
+    expect(calls.checkoutTabs).toEqual(['https://www.bigw.com.au/checkout/delivery']);
+    expect(calls.navigations).toEqual([]);
     expect(calls.guardDisable).toBe(1);
     expect(reports[0]).toBe('Opening the prepared checkout.');
   });

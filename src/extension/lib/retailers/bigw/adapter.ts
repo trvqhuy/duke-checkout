@@ -442,9 +442,10 @@ export class BigWExtensionAdapter implements RetailerAdapter {
       await this.ready(handle, signal);
       return;
     }
+    // The run prepared everything in the background work tab; the only visible
+    // step is opening the checkout in its own active tab (never the app page).
     report('payment', 'Opening the prepared checkout.');
-    await driver.navigate(CHECKOUT_URL);
-    await driver.activate();
+    await driver.openCheckoutTab(CHECKOUT_URL);
     // A fresh navigation invalidates any guard left over from a prior attempt.
     await driver.guardDisable().catch(() => undefined);
     await this.ready(handle, signal);

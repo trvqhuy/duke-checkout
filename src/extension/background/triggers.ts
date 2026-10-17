@@ -13,7 +13,7 @@
 import { getSettings, getProfile, getSessionCard, type DukeSettings } from '../lib/storage.ts';
 import { isProductUrl } from '../lib/product-url.ts';
 import { isEvent } from '../lib/protocol.ts';
-import { configureAppPage, ensureAppPage, openAppPage } from './app-page.ts';
+import { configureAppPage, openAppPage } from './app-page.ts';
 import { getArmed } from './state.ts';
 import { setBadge } from './badge.ts';
 import { NOTIFICATION_ICON } from './notify.ts';
@@ -183,7 +183,8 @@ export async function dispatchTrigger(action: TriggerAction, url: string, _tabId
   // card is missing, so this guard only matters if the inputs changed under us.
   const needsCard = modeNeedsCard(settings.mode);
   if (needsCard && !card) { await openAppPage({ product: url }); return; }
-  await ensureAppPage();
+  // No app page: a configured chip checkout runs entirely in the background and
+  // only surfaces the BIG W checkout tab when the run reaches it.
   await manager.start({
     requestId: crypto.randomUUID(),
     productUrl: url,
