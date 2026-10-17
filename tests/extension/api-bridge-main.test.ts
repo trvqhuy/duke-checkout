@@ -188,6 +188,25 @@ describe('api-bridge main-world payment guard and observer', () => {
     });
   });
 
+  it('records an allowed financial request as pending (status -1) then updates it on response', async () => {
+    let release!: (response: Response) => void;
+    const gate = new Promise<Response>(resolve => { release = resolve; });
+    const original = vi.fn(() => gate);
+    vi.stubGlobal('window', { addEventListener: () => undefined, removeEventListener: () => undefined, postMessage: () => undefined, fetch: original } as unknown as Window);
+    __test.handleControl({ kind: 'guard.enable', binding });
+    const pending = (window.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    // The request is forwarded immediately and recorded as in flight, before
+    // the response exists: this is the PaymentGuard.onSent signal.
+    const during = __test.handleControl({ kind: 'observe.list' }) as { entries: ObservedEntry[] };
+    expect(during.entries).toEqual([{ url: payUrl, method: 'POST', status: -1, bodyText: '' }]);
+    release(Response.json({ orderNumber: 'ORD-1' }));
+    await pending;
+    await vi.waitFor(() => {
+      const settled = __test.handleControl({ kind: 'observe.list' }) as { entries: ObservedEntry[] };
+      expect(settled.entries).toContainEqual({ url: payUrl, method: 'POST', status: 200, bodyText: expect.stringContaining('ORD-1') });
+    });
+  });
+
   it('records status 0 when an observed request fails at the network', async () => {
     const posted: unknown[] = [];
     const original = vi.fn(async () => { throw new Error('offline'); });

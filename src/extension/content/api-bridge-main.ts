@@ -132,6 +132,8 @@ const CHANNEL = 'duke';
 // MAIN-world payment guard + observer
 // ---------------------------------------------------------------------------
 
+// status === -1 means the request was sent and its response is still pending;
+// any status >= 0 is a settled response (0 = the request failed at the network).
 export interface ObservedEntry { url: string; method: string; status: number; bodyText: string }
 
 interface GuardState { binding: PaymentBinding | null; sent: boolean; finalized: boolean }
@@ -169,9 +171,24 @@ function isVaultEndpoint(url: string): boolean {
   } catch { return false; }
 }
 
-function recordObserved(url: string, method: string, status: number, bodyText: string): void {
-  observeEntries.push({ url, method, status, bodyText: bodyText.slice(0, OBSERVE_BODY_LIMIT) });
+// Record a request as sent the moment it is forwarded (status -1 = in flight)
+// and return the entry so the response can update it in place. This is the
+// MAIN-world analogue of PaymentGuard.onSent: a consumer that sees an entry for
+// a payment endpoint knows the request actually left, before any response.
+function recordSent(url: string, method: string): ObservedEntry {
+  const entry: ObservedEntry = { url, method, status: -1, bodyText: '' };
+  observeEntries.push(entry);
   while (observeEntries.length > OBSERVE_LIMIT) observeEntries.shift();
+  return entry;
+}
+
+// Fill in the real response on the entry created by recordSent(). If the entry
+// was evicted from the bounded buffer while the response was in flight, drop the
+// update rather than resurrecting a stale request.
+function updateObserved(entry: ObservedEntry, status: number, bodyText: string): void {
+  if (!observeEntries.includes(entry)) return;
+  entry.status = status;
+  entry.bodyText = bodyText.slice(0, OBSERVE_BODY_LIMIT);
 }
 
 // Same decision core as PaymentGuard.handle, minus the page/request plumbing.
@@ -233,19 +250,23 @@ function installFetchGuard(): void {
     const url = described?.url ?? '';
     const method = described?.method ?? 'GET';
     const observed = described !== null && method === 'POST' && (isPaymentEndpoint(url) || isVaultEndpoint(url));
+    // Record the sent request BEFORE forwarding so a consumer polling the
+    // observer sees the in-flight entry immediately (PaymentGuard.onSent). The
+    // same entry is updated in place once the response settles or fails.
+    const entry = observed ? recordSent(url, method) : null;
     try {
       const response = await original(input, init);
-      if (observed) {
+      if (entry) {
         // Do not await the body before returning: a streamed or never-ending
         // response must not hang the caller. Observe a clone asynchronously.
         const clone = response.clone();
         void clone.text()
-          .then(text => recordObserved(url, method, response.status, text))
-          .catch(() => recordObserved(url, method, response.status, ''));
+          .then(text => updateObserved(entry, response.status, text))
+          .catch(() => updateObserved(entry, response.status, ''));
       }
       return response;
     } catch (error) {
-      if (observed) recordObserved(url, method, 0, '');
+      if (entry) updateObserved(entry, 0, '');
       // A guarded financial request that never got an answer is uncertain: the
       // outcome cannot be confirmed, so the SW must reconcile it.
       if (described !== null && method === 'POST' && guardState.binding !== null && !!financialUrl(url)) notifyGuard({ type: 'uncertain' });

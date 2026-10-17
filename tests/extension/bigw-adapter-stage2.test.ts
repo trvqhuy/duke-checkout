@@ -90,6 +90,11 @@ const paymentEntry = (body: unknown, status = 200): ObservedEntry => ({
   url: 'https://api.bigw.com.au/storefront/v1/cart/CT_1/pay', method: 'POST', status, bodyText: JSON.stringify(body),
 });
 
+// A sent-but-unanswered payment request, as the MAIN-world observer records it.
+const pendingPayment = (): ObservedEntry => ({
+  url: 'https://api.bigw.com.au/storefront/v1/cart/CT_1/pay', method: 'POST', status: -1, bodyText: '',
+});
+
 function makeSender(responses: Record<string, unknown>, requests: Array<{ path: string; method: string; body: unknown }> = []) {
   return {
     sendMessage: async (_tabId: number, msg: unknown) => {
@@ -249,7 +254,31 @@ describe('BigWExtensionAdapter stage 2 — pay', () => {
     expect((await adapter.pay(prepared, newCard, () => {})).status).toBe('unknown');
   });
 
-  it('waits past the 20 s vault deadline once a Pay click has been submitted', async () => {
+  it('keeps re-clicking through a silent no-op Pay click until a request is observed', async () => {
+    vi.useFakeTimers();
+    try {
+      const entries: ObservedEntry[] = [];
+      const { adapter, calls } = setup({
+        values: { number: '4111111111111111', expiryDate: '12/37', securityCode: '123' },
+        observe: () => entries,
+      });
+      const pending = adapter.pay(prepared, newCard, () => {});
+      // The first click reports clicked:true but sends nothing (the secure
+      // fields were rebuilt): no observer entry appears, so the adapter must not
+      // treat the click as sent and must keep retrying.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(calls.top.filter(message => message.type === 'driver.clickPay').length).toBeGreaterThanOrEqual(2);
+      // A later click actually sends the request.
+      entries.push(pendingPayment());
+      await vi.advanceTimersByTimeAsync(700);
+      entries[0].status = 200;
+      entries[0].bodyText = JSON.stringify({ data: { orderNumber: 'ORD-2' } });
+      await vi.advanceTimersByTimeAsync(700);
+      await expect(pending).resolves.toEqual({ status: 'confirmed', orderNumber: 'ORD-2' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not settle unknown at the 20 s vault deadline once a payment request is sent', async () => {
     vi.useFakeTimers();
     try {
       const entries: ObservedEntry[] = [];
@@ -259,11 +288,16 @@ describe('BigWExtensionAdapter stage 2 — pay', () => {
       });
       let result: string | undefined;
       const pending = adapter.pay(prepared, newCard, () => {}).then(outcome => { result = outcome.status; return outcome; });
+      // The Pay click forwards a request; the observer records it as in flight
+      // (status -1) — the PaymentGuard.onSent signal — before any response.
+      entries.push(pendingPayment());
       await vi.advanceTimersByTimeAsync(20_000);
       expect(result).toBeUndefined();
       await vi.advanceTimersByTimeAsync(10_000);
       expect(result).toBeUndefined();
-      entries.push(paymentEntry({ data: { orderNumber: 'ORD-LATE' } }));
+      // The slow response settles after the deadline; the adapter must use it.
+      entries[0].status = 200;
+      entries[0].bodyText = JSON.stringify({ data: { orderNumber: 'ORD-LATE' } });
       await vi.advanceTimersByTimeAsync(700);
       await expect(pending).resolves.toEqual({ status: 'confirmed', orderNumber: 'ORD-LATE' });
     } finally { vi.useRealTimers(); }

@@ -439,12 +439,13 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     // entry from a previous attempt cannot settle this submission.
     await driver.observeClear?.().catch(() => undefined);
     return new Promise<PaymentOutcome>(resolve => {
-      // `observed` records an observed payment response (the authoritative
-      // outcome source); `submitted` records that a submission was actually
-      // initiated. The server's PaymentGuard.onSent sets `observed` when the
-      // request is *sent*; the extension can only see the response, so it tracks
-      // the dispatch point separately (a Pay click, or the issued /pay call).
-      let settled = false, observed = false, submitted = false, guardEnabled = false, requestedAction = false, checkingObserve = false, checkingState = false;
+      // `observed` is the sent signal, mirroring the server's PaymentGuard.onSent:
+      // it becomes true once a payment request (`/pay` or `/pay/finalize`) has
+      // actually been sent. The MAIN-world observer records a sent request as an
+      // entry with status -1 (in flight) that it later updates in place with the
+      // real status (0 = network failure). A Pay click that does nothing — the
+      // secure fields were rebuilt — produces no entry and must keep retrying.
+      let settled = false, observed = false, guardEnabled = false, requestedAction = false, checkingObserve = false, checkingState = false;
       let pendingReference: string | undefined;
       const unknown: PaymentOutcome = { status: 'unknown', message: 'The payment outcome is not confirmed. Check BIG W order history before another purchase.' };
       const finish = (outcome: PaymentOutcome) => {
@@ -475,9 +476,13 @@ export class BigWExtensionAdapter implements RetailerAdapter {
                 return;
               }
               if (!isPaymentEndpoint(entry.url, prepared.cartId)) continue;
+              // status -1 = the request was sent and its response is still in
+              // flight; status >= 0 = a settled response (0 = network failure).
+              // Either way the request was actually sent (PaymentGuard.onSent).
+              observed = true;
+              if (entry.status === -1) continue;
               if (entry.status === 0) { finish(unknown); return; }
               if (entry.status >= 200) {
-                observed = true;
                 let value: unknown;
                 try { value = JSON.parse(entry.bodyText); } catch { value = undefined; }
                 const body = record(record(value).data ?? value);
@@ -509,10 +514,10 @@ export class BigWExtensionAdapter implements RetailerAdapter {
       }, 700);
 
       const deadline = setTimeout(() => finish(unknown), 300_000);
-      // Server equivalent: PaymentGuard.onSent. Only fail after 20 s if nothing
-      // was ever submitted; once a submission has been sent, a slow response
-      // must not settle as unknown.
-      const vaultDeadline = setTimeout(() => { if (!submitted) finish(unknown); }, 20_000);
+      // Server equivalent: PaymentGuard.onSent. Only fail after 20 s if no
+      // payment request was ever sent (observed is false); once one has been
+      // sent, a slow response must not settle as unknown.
+      const vaultDeadline = setTimeout(() => { if (!observed) finish(unknown); }, 20_000);
 
       void (async () => {
         try {
@@ -531,27 +536,26 @@ export class BigWExtensionAdapter implements RetailerAdapter {
             const normalize = (value?: string) => (value ?? '').replace(/\D/g, '');
             // The checkout rebuilds the secure fields shortly after fill, which
             // clears the card and turns a Pay click into a silent no-op. Keep
-            // re-filling and clicking until a payment request is observed. The
+            // re-filling and clicking until a payment request is actually sent
+            // (observed), exactly like the server: a silent no-op click reports
+            // clicked:true but sends nothing, so it must not stop the loop. The
             // guard allows only the first submission, so re-clicking is safe.
-            // Stop once a Pay click has been dispatched (server:
-            // PaymentGuard.onSent) — a slow response must not settle unknown.
-            for (let attempt = 0; attempt < 6 && !settled && !observed && !submitted; attempt++) {
+            for (let attempt = 0; attempt < 6 && !settled && !observed; attempt++) {
               if (!(await this.valuesPersisted(driver, fields, normalize))) {
                 try { await this.fillCard(card); } catch { /* fill logs its own reason */ }
               }
-              if (settled || observed || submitted) break;
-              const click = await driver.sendTop({ type: 'driver.clickPay' }).catch(() => undefined) as { clicked?: boolean } | undefined;
-              if (click?.clicked === true) submitted = true;
+              if (settled || observed) break;
+              await driver.sendTop({ type: 'driver.clickPay' }).catch(() => undefined);
               const until = Date.now() + 4000;
-              while (Date.now() < until && !settled && !observed && !submitted) await sleep(200);
-              if (!settled && !observed && !submitted) console.log(`[duke] card submit: no payment seen after click ${attempt + 1}; retrying`);
+              while (Date.now() < until && !settled && !observed) await sleep(200);
+              if (!settled && !observed) console.log(`[duke] card submit: no payment seen after click ${attempt + 1}; retrying`);
             }
-            if (!observed && !submitted && !settled) finish(unknown);
+            if (!observed && !settled) finish(unknown);
           } else {
             const fingerprint = (await driver.antiFraud()).fingerprint;
-            // Issuing the stored-card /pay request is this path's submission
-            // point (server: PaymentGuard.onSent on the intercepted request).
-            submitted = true;
+            // The stored-card /pay request is recorded by the MAIN world as a
+            // pending entry the moment it is forwarded, so `observed` (onSent)
+            // is set without a click; its response is interpreted directly below.
             const value = await this.req(handle, `/storefront/v1/cart/${encodeURIComponent(prepared.cartId)}/pay`, 'POST', {
               cartId: prepared.cartId, cartVersion: prepared.cart.version, deviceFingerprint: fingerprint,
               transactions: { creditCardPaymentStoredInfo: { amountInCents: prepared.cart.total, securityCode: card.cvv, internalPaymentMethodId: card.cardId } },
