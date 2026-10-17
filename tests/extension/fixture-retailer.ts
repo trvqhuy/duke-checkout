@@ -183,6 +183,10 @@ export class RetailerFixture {
     else if (path.startsWith('/warehouse-customer/')) body = [{ state: 'NSW', miraklZone: 'ZONE_1', zoneClassification: 'METRO' }];
     else if (path.startsWith('/api/availability/')) body = availability;
     else if (path === '/api/stores/v0/list') body = [{ id: 'S1', name: 'Sydney Store', address: { state: 'NSW' } }];
+    // Profile import (Stage-3 onboarding): the account name/phone and the
+    // primary delivery address the adapter normalises into a stored profile.
+    else if (path === '/profile/v1/addresses') body = [{ primary: true, ...address }];
+    else if (path === '/profile/v1/profile') body = { name: { given: profile.firstName, family: profile.lastName }, phone: { mobile: address.phonenumber } };
     else if (path.includes('/storefront/v1/cart/')) {
       if (path.endsWith('/create')) {
         const data = request.postData() ? JSON.parse(request.postData()!) : {};
