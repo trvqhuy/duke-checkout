@@ -331,4 +331,14 @@ describe('runtime message responder contract', () => {
     await flush();
     expect(sendResponse).toHaveBeenCalledWith(undefined);
   });
+
+  it('stays silent on bridge.request and bridge.control so the isolated relay remains the sole responder', () => {
+    setLocation('https://www.bigw.com.au/checkout/delivery');
+    const onRequest = vi.fn();
+    const onControl = vi.fn();
+    expect(onMessage({ type: 'bridge.request', args: { origin: 'https://api.bigw.com.au', path: '/x' } }, {} as chrome.runtime.MessageSender, onRequest)).toBe(false);
+    expect(onMessage({ type: 'bridge.control', control: { kind: 'observe.list' } }, {} as chrome.runtime.MessageSender, onControl)).toBe(false);
+    expect(onRequest).not.toHaveBeenCalled();
+    expect(onControl).not.toHaveBeenCalled();
+  });
 });
