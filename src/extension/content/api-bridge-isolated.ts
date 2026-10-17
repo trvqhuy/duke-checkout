@@ -20,7 +20,10 @@ function relayIntoMain(sendResponse: (result: unknown) => void, payload: { kind?
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   // Guard events have no requestId/result, so they never satisfy a relay reply.
-  // Forward them to the SW; the router filters `guard.event` (Task 6).
+  // Forward them to the SW; the router filters `guard.event` (Task 6). NOTE:
+  // these events originate in the MAIN world and are ADVISORY only (any page
+  // script can forge them) — the SW must reconcile against observe.list and the
+  // run's own request results, never treat them as authoritative.
   window.addEventListener('message', event => {
     if (event.source !== window || event.data?.channel !== 'duke' || event.data.kind !== 'guard.event') return;
     try { void chrome.runtime?.sendMessage?.({ type: 'guard.event', event: event.data.event })?.catch?.(() => undefined); } catch { /* SW unavailable */ }

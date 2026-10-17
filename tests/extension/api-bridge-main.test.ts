@@ -178,10 +178,14 @@ describe('api-bridge main-world payment guard and observer', () => {
     const vaultUrl = 'https://api.wpay2.gr4vy.app/checkout/sessions/sess-1/card-details';
     await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
     await (win.fetch as typeof fetch)(vaultUrl, { method: 'POST', body: '{}' });
-    const listed = __test.handleControl({ kind: 'observe.list' }) as { entries: ObservedEntry[] };
-    expect(listed.entries).toHaveLength(2);
-    expect(listed.entries[0]).toMatchObject({ url: payUrl, method: 'POST', status: 200 });
-    expect(listed.entries[1]).toMatchObject({ url: vaultUrl, method: 'POST', status: 200, bodyText: 'vault-ok' });
+    // Response bodies are observed asynchronously (never awaited before the
+    // caller gets its Response), so poll until the clone read settles.
+    await vi.waitFor(() => {
+      const listed = __test.handleControl({ kind: 'observe.list' }) as { entries: ObservedEntry[] };
+      expect(listed.entries).toHaveLength(2);
+      expect(listed.entries[0]).toMatchObject({ url: payUrl, method: 'POST', status: 200 });
+      expect(listed.entries[1]).toMatchObject({ url: vaultUrl, method: 'POST', status: 200, bodyText: 'vault-ok' });
+    });
   });
 
   it('records status 0 when an observed request fails at the network', async () => {
@@ -214,5 +218,51 @@ describe('api-bridge main-world payment guard and observer', () => {
     const replies: unknown[] = [];
     await handleMessage({ channel: 'duke', requestId: 'c1', kind: 'control', control: { kind: 'guard.enable', binding } }, msg => replies.push(msg));
     expect(replies[0]).toMatchObject({ channel: 'duke', requestId: 'c1', result: { ok: true } });
+  });
+
+  it('forwards a pass-through fetch with an unexpected input shape without the guard throwing', async () => {
+    const forwarded = vi.fn(async () => { throw new Error('original-boom'); });
+    vi.stubGlobal('window', { addEventListener: () => undefined, removeEventListener: () => undefined, postMessage: () => undefined, fetch: forwarded } as unknown as Window);
+    __test.installGuard();
+    await expect((window.fetch as typeof fetch)(undefined as never)).rejects.toThrow('original-boom');
+    expect(forwarded).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open and reports uncertain when the guard decision throws', async () => {
+    const { win, original, posted } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    __test.forceDecisionError = true;
+    const response = await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    expect(response.status).toBe(200);
+    expect(original).toHaveBeenCalledTimes(1);
+    expect(posted).toContainEqual({ channel: 'duke', kind: 'guard.event', event: { type: 'uncertain' } });
+  });
+
+  it('guards the body of a financial fetch(Request)', async () => {
+    const { win, original, posted } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    const violating = { ...payload(), transactions: { creditCardPaymentInfo: { amountInCents: 9999, sessionId: 'current-session' } } };
+    const request = new Request(payUrl, { method: 'POST', body: JSON.stringify(violating) });
+    await expect((win.fetch as typeof fetch)(request)).rejects.toThrow(TypeError);
+    expect(original).not.toHaveBeenCalled();
+    expect(posted).toContainEqual({ channel: 'duke', kind: 'guard.event', event: { type: 'prevented', code: 'PAYMENT_CHANGED' } });
+  });
+
+  it('reads the body of a matching financial fetch(Request) and allows it', async () => {
+    const { win, original, posted } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    const request = new Request(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    const response = await (win.fetch as typeof fetch)(request);
+    expect(response.status).toBe(200);
+    expect(original).toHaveBeenCalledTimes(1);
+    expect(posted).toContainEqual({ channel: 'duke', kind: 'guard.event', event: { type: 'sent' } });
+  });
+
+  it('leaves the returned response body readable after observation', async () => {
+    const { win, original } = setupGuardWindow();
+    __test.installGuard();
+    const response = await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    expect(original).toHaveBeenCalledTimes(1);
+    await expect(response.json()).resolves.toEqual({ orderNumber: 'ORD-1', status: 'CONFIRMED' });
   });
 });

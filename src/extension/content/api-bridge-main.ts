@@ -16,6 +16,34 @@
 // blocked request never reaches the network; fetch rejects with a TypeError
 // (mirroring a blocked interception) and XHR surfaces error/readystatechange
 // with status 0.
+//
+// ---------------------------------------------------------------------------
+// TRUST BOUNDARY (read before relying on this guard)
+// ---------------------------------------------------------------------------
+// This guard is NOT a security boundary against the page. It runs in the
+// MAIN world, so any script on bigw.com.au can reassign window.fetch after
+// install, post fabricated `guard.event` messages, or drive the control
+// surface (window.postMessage `control`) directly. It exists only to constrain
+// the automated checkout flow's own accidental or drifted submissions — a
+// safety interlock for our driver, not a wall against the page.
+//
+// Consequence for consumers: the service worker MUST treat `guard.event` as
+// ADVISORY, never authoritative. Reconcile every sent/prevented/uncertain
+// event against `observe.list` and/or the run's own request results before
+// making a financial decision. A `prevented` event does not prove nothing was
+// charged, and the absence of one does not prove a charge was made.
+//
+// Guarding limitations (fail-closed unless stated otherwise):
+//   - Relative-URL requests are UNGUARDED: financialUrl() requires an absolute
+//     URL, so a same-origin-relative `fetch('/storefront/v1/cart/.../pay')`
+//     never matches and is forwarded untouched. The automated driver always
+//     issues absolute URLs; a page script using relative URLs bypasses the
+//     guard entirely (see the trust boundary note above — it is not a wall).
+//   - Non-string bodies (FormData/Blob/ArrayBuffer/URLSearchParams) are
+//     unreadable to checkPaymentRequest and are therefore treated as
+//     PAYMENT_CHANGED (blocked) while a binding is enabled.
+//   - fetch(Request) bodies are read from a clone so the real body reaches
+//     checkPaymentRequest; the original Request is left intact for forwarding.
 import { checkPaymentRequest, financialUrl, type PaymentBinding } from '../../shared/payment-check.ts';
 
 export function resolveToken(requiredScopes: string[]): { token: string; expiresAt: number; scopes: string[] } | null {
@@ -113,6 +141,9 @@ const observeEntries: ObservedEntry[] = [];
 const OBSERVE_LIMIT = 20;
 const OBSERVE_BODY_LIMIT = 32_768;
 
+// Test-only fault injection. Off in production; flipped through `__test`.
+const testHooks = { forceDecisionError: false };
+
 type GuardEvent = { type: 'sent' | 'prevented' | 'uncertain'; code?: string };
 
 function notifyGuard(event: GuardEvent): void {
@@ -146,6 +177,7 @@ function recordObserved(url: string, method: string, status: number, bodyText: s
 // Same decision core as PaymentGuard.handle, minus the page/request plumbing.
 // Mutates sent/finalized only when the request is allowed.
 function decideFinancial(url: string, body: string | undefined): { prevent: string } | { allow: true } {
+  if (testHooks.forceDecisionError) throw new Error('forced decision error');
   const binding = guardState.binding as PaymentBinding;
   const finalizer = new URL(url).pathname.endsWith('/finalize');
   const duplicate = finalizer ? !guardState.sent || guardState.finalized : guardState.sent;
@@ -171,39 +203,52 @@ function installFetchGuard(): void {
   if (current.__dukeGuard) return;
   const original = window.fetch.bind(window);
   const guarded = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const { url, method, body } = describeRequest(input, init);
-    const enabled = guardState.binding !== null;
-    const financial = method === 'POST' && !!financialUrl(url);
-    const observed = method === 'POST' && (isPaymentEndpoint(url) || isVaultEndpoint(url));
-    if (enabled && financial) {
-      let prevent: string | null = null;
-      try {
-        const decision = decideFinancial(url, body);
-        prevent = 'prevent' in decision ? decision.prevent : null;
-      } catch {
-        // Fail-open: an unexpected error in the guard's own logic must never
-        // stop the request. This matches the server guard, which continues on
-        // unexpected errors; only a positive decision prevents forwarding.
-        notifyGuard({ type: 'uncertain' });
+    // Describing the request and reaching a decision runs on EVERY fetch, so
+    // it is fenced: an unexpected input shape (or any bug in our own logic)
+    // must never break the retailer's own fetch. On error we fail open,
+    // forward to the original fetch, and report `uncertain` for reconciliation.
+    let described: { url: string; method: string; body?: string } | null = null;
+    try {
+      described = describeRequest(input, init);
+      const enabled = guardState.binding !== null;
+      const financial = described.method === 'POST' && !!financialUrl(described.url);
+      if (enabled && financial) {
+        // A fetch(Request) carries its body on the Request, not in init. Read a
+        // clone (async, still inside the fence) so the original Request's body
+        // stays intact for forwarding and checkPaymentRequest sees real JSON.
+        if (typeof Request !== 'undefined' && input instanceof Request) {
+          described.body = await input.clone().text();
+        }
+        const decision = decideFinancial(described.url, described.body);
+        if ('prevent' in decision) {
+          notifyGuard({ type: 'prevented', code: decision.prevent });
+          return Promise.reject(new TypeError('Failed to fetch'));
+        }
       }
-      if (prevent) {
-        notifyGuard({ type: 'prevented', code: prevent });
-        throw new TypeError('Failed to fetch');
-      }
+    } catch {
+      // Fail-open: only a positive decision above prevents forwarding; every
+      // other error reports `uncertain` and falls through to the original.
+      notifyGuard({ type: 'uncertain' });
     }
+    const url = described?.url ?? '';
+    const method = described?.method ?? 'GET';
+    const observed = described !== null && method === 'POST' && (isPaymentEndpoint(url) || isVaultEndpoint(url));
     try {
       const response = await original(input, init);
       if (observed) {
-        let text = '';
-        try { text = await response.clone().text(); } catch { /* body unavailable */ }
-        recordObserved(url, method, response.status, text);
+        // Do not await the body before returning: a streamed or never-ending
+        // response must not hang the caller. Observe a clone asynchronously.
+        const clone = response.clone();
+        void clone.text()
+          .then(text => recordObserved(url, method, response.status, text))
+          .catch(() => recordObserved(url, method, response.status, ''));
       }
       return response;
     } catch (error) {
       if (observed) recordObserved(url, method, 0, '');
       // A guarded financial request that never got an answer is uncertain: the
       // outcome cannot be confirmed, so the SW must reconcile it.
-      if (enabled && financial) notifyGuard({ type: 'uncertain' });
+      if (described !== null && method === 'POST' && guardState.binding !== null && !!financialUrl(url)) notifyGuard({ type: 'uncertain' });
       throw error;
     }
   };
@@ -242,6 +287,10 @@ function installXhrGuard(): void {
       if (prevent) {
         notifyGuard({ type: 'prevented', code: prevent });
         queueMicrotask(() => {
+          // Best-effort rejection of a blocked XHR: fire error + readystatechange
+          // with status 0. Note this does NOT advance readyState to 4 — a caller
+          // watching only for readyState 4 will simply never resolve. fetch is
+          // the primary path (BIG W checkout and this bridge both use it).
           try { this.dispatchEvent(new Event('error')); this.dispatchEvent(new Event('readystatechange')); } catch { /* ignore */ }
         });
         return;
@@ -299,6 +348,7 @@ function reset(): void {
   guardState.sent = false;
   guardState.finalized = false;
   observeEntries.length = 0;
+  testHooks.forceDecisionError = false;
   uninstallGuard();
 }
 
@@ -327,4 +377,12 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   });
 }
 
-export const __test = { handleControl, guardState, observeEntries, reset, installGuard };
+export const __test = {
+  handleControl,
+  guardState,
+  observeEntries,
+  reset,
+  installGuard,
+  get forceDecisionError(): boolean { return testHooks.forceDecisionError; },
+  set forceDecisionError(value: boolean) { testHooks.forceDecisionError = value; },
+};
