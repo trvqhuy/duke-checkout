@@ -38,6 +38,12 @@
 // (l) clearSensitiveFields()/resetAfterNavigation() reset a per-adapter
 //     `filled` flag instead of a persistent PaymentDriver's page state; the
 //     gate is the MAIN-world guard, so resetAfterNavigation() is a flag reset.
+// (m) armedState()/disarm() expose the RunManager's armed fast paths with no
+//     chrome dependency: an optional armedStore is injected by the service
+//     worker (backed by chrome.storage.session), and arm()/standbyArm()
+//     publish the produced ArmedCheckout into it as well as returning it. The
+//     accessors are synchronous, exactly as the ported RunManager calls them
+//     (`this.adapter.armedState?.()` / `disarm?.()`).
 // The bridge reads the live token per request, so no session renewal step
 // exists here.
 import { parseProductLink } from '../../../../shared/validation.ts';
@@ -70,7 +76,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
   // Set once a card fill persisted secure-field values; clearSensitiveFields()
   // only wipes when a fill actually happened (same gate as PaymentDriver.clear).
   private filled = false;
-  constructor(private acquire: () => Promise<BridgeHandle>) {}
+  constructor(private acquire: () => Promise<BridgeHandle>, private armedStore?: { get(): ArmedCheckout | null; set(armed: ArmedCheckout | null): void }) {}
 
   // Every store call is bridged through the work tab. Authenticated calls carry
   // their required scopes so the MAIN world resolves a matching token.
@@ -78,6 +84,12 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     const args = { origin, path, method, body, publicRequest, ...(publicRequest ? {} : { scopes: scopesForPath(path, method) }) };
     return bridgeRequest(handle.sender, handle.tabId, args);
   }
+
+  // Synchronous armed-state accessors for the ported RunManager fast paths.
+  // The store is injected by the service worker; a bare adapter (tests, other
+  // hosts) simply reports no armed checkout.
+  armedState(): ArmedCheckout | null { return this.armedStore?.get() ?? null; }
+  disarm(): void { this.armedStore?.set(null); }
 
   // Public passthrough for the service worker's keeper: the same acquire seam
   // the adapter itself uses.
@@ -199,24 +211,30 @@ export class BigWExtensionAdapter implements RetailerAdapter {
       }
       throw error;
     }
-    return {
+    const armed: ArmedCheckout = {
       productUrl: input.productUrl, productCode: product.code, quantity: input.quantity,
       maxTotalCents: input.maxTotalCents, profile: input.profile, product,
       cartId: prepared.cartId, cart: prepared.cart, armedAt: new Date().toISOString(),
       level: 'cart-ready',
     };
+    // Publish as well as return: the RunManager reads armedState() synchronously
+    // at the start of a matching run.
+    this.armedStore?.set(armed);
+    return armed;
   }
 
   // A standby arm for pre-release products: nothing cart-related is possible
   // yet, but the resolved product details (and, by the time a run fires, a warm
   // work tab via the same acquire seam) keep the release-moment run fast.
   private standbyArm(input: RunRequest, product: ProductInfo, note: string): ArmedCheckout {
-    return {
+    const armed: ArmedCheckout = {
       productUrl: input.productUrl, productCode: product.code, quantity: input.quantity,
       maxTotalCents: input.maxTotalCents, profile: input.profile, product,
       cartId: '', cart: { id: '', version: 0, total: 0, deliveryCost: 0, entries: [] },
       armedAt: new Date().toISOString(), level: 'standby', note,
     };
+    this.armedStore?.set(armed);
+    return armed;
   }
 
   async verify(prepared: PreparedCheckout, input: RunRequest): Promise<CartState> {

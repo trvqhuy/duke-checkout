@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BigWExtensionAdapter } from '../../src/extension/lib/retailers/bigw/adapter.ts';
+import type { RunAdapter } from '../../src/extension/background/run-manager.ts';
+import type { ArmedCheckout } from '../../src/shared/types.ts';
 import { productUrl, profile } from '../fixtures.ts';
 
 const stubSender = (responses: Record<string, unknown>, called: string[] = []) => ({
@@ -71,5 +73,46 @@ describe('BigWExtensionAdapter', () => {
       '/storefront/v1/cart/CT_abc/billing-address',
       '/storefront/v1/cart/CT_abc/recalculate',
     ]);
+  });
+  it('arm() publishes a cart-ready checkout to the injected store', async () => {
+    const written: Array<ArmedCheckout | null> = [];
+    const store = { get: () => null as ArmedCheckout | null, set: (armed: ArmedCheckout | null) => { written.push(armed); } };
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({
+      '/warehouse-customer/v1/postcode/2000': { ok: true, status: 200, data: [{ state: 'NSW', miraklZone: 'ZONE_1', zoneClassification: 'MIXED' }] },
+      '/api/stores/v0/list': { ok: true, status: 200, data: [{ id: 'S1', name: 'Sydney Store', address: { state: 'NSW' } }] },
+      '/storefront/v1/cart/create': { ok: true, status: 200, data: { id: 'CT_abc', version: 1, total: 100, deliveryCost: 0, entries: [{ productCode: '1', quantity: 1 }] } },
+      '/storefront/v1/cart/CT_abc/update-details': { ok: true, status: 200, data: null },
+      '/storefront/v1/cart/CT_abc/fulfilment-preference': { ok: true, status: 200, data: null },
+      '/storefront/v1/cart/CT_abc/billing-address': { ok: true, status: 200, data: null },
+      '/storefront/v1/cart/CT_abc/recalculate': { ok: true, status: 200, data: null },
+    }) }), store);
+    adapter.inspect = async () => ({ code: '1', url: productUrl, title: 'X', imageUrl: '', priceCents: 100, deliveryCents: 0, available: true, stockLabel: '', requiresVariant: false } as never);
+    const armed = await adapter.arm({ productUrl, quantity: 1, maxTotalCents: 2500, mode: 'purchase', profile: profile as never } as never, () => undefined, new AbortController().signal);
+    expect(written).toEqual([armed]);
+    expect(written[0]?.level).toBe('cart-ready');
+  });
+  it('arm() publishes a standby checkout to the injected store', async () => {
+    const written: Array<ArmedCheckout | null> = [];
+    const store = { get: () => null as ArmedCheckout | null, set: (armed: ArmedCheckout | null) => { written.push(armed); } };
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({}) }), store);
+    adapter.inspect = async () => ({ code: '1', url: productUrl, title: 'X', imageUrl: '', priceCents: 100, deliveryCents: 0, available: false, stockLabel: '', requiresVariant: false } as never);
+    const armed = await adapter.arm({ productUrl, quantity: 1, maxTotalCents: 2500, mode: 'purchase', profile: profile as never } as never, () => undefined, new AbortController().signal);
+    expect(written).toEqual([armed]);
+    expect(written[0]?.level).toBe('standby');
+  });
+  it('armedState() reflects the store and disarm() clears it', () => {
+    const held: ArmedCheckout = { level: 'cart-ready', cartId: 'CT_abc', productCode: '1' } as ArmedCheckout;
+    let current: ArmedCheckout | null = held;
+    const store = { get: () => current, set: (armed: ArmedCheckout | null) => { current = armed; } };
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({}) }), store);
+    expect(adapter.armedState()).toBe(held);
+    adapter.disarm();
+    expect(current).toBeNull();
+    expect(adapter.armedState()).toBeNull();
+  });
+  it('satisfies the RunManager RunAdapter armed accessors', () => {
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({}) }));
+    const runAdapter: RunAdapter = adapter;
+    expect(runAdapter.armedState?.()).toBeNull();
   });
 });

@@ -7,23 +7,43 @@ import { BigWExtensionAdapter } from '../lib/retailers/bigw/adapter.ts';
 import { RunManager } from './run-manager.ts';
 import { driverHandleFor } from './driver.ts';
 import { AppError, publicError } from '../../server/errors.ts';
+import type { ArmedCheckout } from '../../shared/types.ts';
+
+// The armed checkout, mirrored from chrome.storage.session into memory so the
+// adapter's synchronous armedState() can answer the RunManager's fast-path
+// check without async storage. The store's set() is the single writer: it keeps
+// the cache and session storage in lockstep.
+let armedCache: ArmedCheckout | null = null;
 
 // Every acquire returns the tab id, the bridge sender, and a fresh Stage-2
 // driver handle for that tab (the driver is chrome-backed, so it is built here
 // where chrome exists, keeping the adapter headless).
-const adapter = new BigWExtensionAdapter(async () => {
-  const tab = await acquireWorkTab();
-  if (!tab.id) throw new AppError('BRIDGE_UNREADY', 'No BIG W tab is available. Open bigw.com.au once.');
-  await waitForBridgeReady(tab.id);
-  return { tabId: tab.id, sender: { sendMessage: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg as never) }, driver: driverHandleFor(tab.id) };
-});
+const adapter = new BigWExtensionAdapter(
+  async () => {
+    const tab = await acquireWorkTab();
+    if (!tab.id) throw new AppError('BRIDGE_UNREADY', 'No BIG W tab is available. Open bigw.com.au once.');
+    await waitForBridgeReady(tab.id);
+    return { tabId: tab.id, sender: { sendMessage: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg as never) }, driver: driverHandleFor(tab.id) };
+  },
+  {
+    get: () => armedCache,
+    set: value => { armedCache = value; void (value ? setArmed(value) : clearArmed()); },
+  },
+);
 
 // The RunManager is a module singleton. init() loads history and runs the
 // server's interrupted-run recovery; it runs exactly once (memoized promise)
 // even though a freshly-spawned service worker re-evaluates this module.
 const manager = new RunManager(adapter);
 let managerInit: Promise<void> | null = null;
-function initManager(): Promise<void> { return (managerInit ??= manager.init()); }
+function initManager(): Promise<void> {
+  return (managerInit ??= (async () => {
+    // Hydrate the armed cache once. A storage failure must never block the
+    // service worker from starting; the cache simply stays null.
+    try { armedCache = await getArmed(); } catch { armedCache = null; }
+    await manager.init();
+  })());
+}
 void initManager();
 
 // Session keeper: a chrome.alarms beat wakes the sleeping service worker; when
@@ -39,7 +59,9 @@ registerKeeper(
     // A reload would abort an in-flight run, so the keeper reports "not armed"
     // (and therefore never refreshes) while the RunManager has an active run.
     if (manager.activeRunId) return { armed: false, authenticated: false, tokenSecondsRemaining: 0 };
-    const armed = await getArmed();
+    // Read the same cache the adapter's arm()/disarm() write, so keeper refresh
+    // and the RunManager fast path never disagree about whether a run is armed.
+    const armed = armedCache;
     if (!armed) return { armed: false, authenticated: false, tokenSecondsRemaining: 0 };
     const handle = await adapter.acquirePublic().catch(() => null);
     if (!handle) return { armed: !!armed, authenticated: false, tokenSecondsRemaining: 0 };
@@ -88,7 +110,7 @@ async function handle(request: DukeRequest): Promise<unknown> {
   switch (request.type) {
     case 'bootstrap.get': return {
       settings: await getSettings(), profile: await getProfile(), history: await getHistory(),
-      armed: await getArmed(), defaults: DEFAULT_SETTINGS,
+      armed: armedCache, defaults: DEFAULT_SETTINGS,
     };
     case 'settings.get': return await getSettings();
     case 'settings.put': return await putSettings(request.payload as never);
@@ -101,13 +123,14 @@ async function handle(request: DukeRequest): Promise<unknown> {
     case 'arm.start': {
       const input = request.payload as never;
       // No cancellation path in stage 1; signal satisfies the interface.
+      // arm() publishes the result through the adapter's injected store, which
+      // updates armedCache and session storage together.
       const armed = await adapter.arm(input, () => undefined, new AbortController().signal);
-      await setArmed(armed);
       broadcast({ type: 'arm.update', payload: armed });
       return armed;
     }
-    case 'arm.clear': await clearArmed(); broadcast({ type: 'arm.update', payload: null }); return { ok: true };
-    case 'arm.get': return await getArmed();
+    case 'arm.clear': adapter.disarm(); broadcast({ type: 'arm.update', payload: null }); return { ok: true };
+    case 'arm.get': return armedCache;
     case 'run.start':
       await ensureAppPage();
       return await manager.start(request.payload);
