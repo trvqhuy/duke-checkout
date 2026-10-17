@@ -49,7 +49,7 @@ import { bridgeRequest } from '../../../background/bridge-client.ts';
 import { scopesForPath } from '../../../content/api-bridge-main.ts';
 import type { BridgeHandle, DriverFrame, DriverHandle, RetailerAdapter } from '../types.ts';
 import type { PaymentBinding } from '../../../../shared/payment-check.ts';
-import type { ArmedCheckout, CartState, PaymentInput, PaymentOutcome, PreparedCheckout, ProductInfo, Profile, RunRequest, StageReporter } from '../../../../shared/types.ts';
+import type { ArmedCheckout, CartState, PaymentInput, PaymentOutcome, PreparedCheckout, ProductInfo, Profile, RunRequest, SavedCard, StageReporter } from '../../../../shared/types.ts';
 
 interface Location { storeId: string; zone?: string; zoneType?: string }
 
@@ -223,6 +223,23 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     const handle = await this.acquire();
     return parseCartState(await this.req(handle, `/storefront/v1/cart/${encodeURIComponent(prepared.cartId)}?state=${input.profile.deliveryAddress.state}&channel=web`));
   }
+
+  // Verbatim port of the server BigWAdapter.savedCards() (src/server/browser/
+  // bigw.ts): the bridge maps /storefront/v1/cart/saved-cards, and the same
+  // id + 4-digit last4 filter drops malformed entries. The server's
+  // listCards() first renews the session; the bridge reads the live token per
+  // request, so that step has no extension equivalent.
+  async savedCards(): Promise<SavedCard[]> {
+    const handle = await this.acquire();
+    const data = await this.req(handle, '/storefront/v1/cart/saved-cards');
+    if (!Array.isArray(data)) return [];
+    return data.map(value => { const card = record(value); return {
+      id: string(card.id), brand: string(card.brand, 'Card'), last4: string(card.last4),
+      expiryMonth: typeof card.expiryMonth === 'number' ? card.expiryMonth : undefined,
+      expiryYear: typeof card.expiryYear === 'number' ? card.expiryYear : undefined,
+    }; }).filter(card => card.id && /^\d{4}$/.test(card.last4));
+  }
+  async listCards(): Promise<SavedCard[]> { return this.savedCards(); }
 
   // -------------------------------------------------------------------------
   // Stage 2: driver-backed checkout (fill / pay / reveal / clear / afterpay)

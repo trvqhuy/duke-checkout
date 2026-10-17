@@ -25,6 +25,19 @@ describe('BigWExtensionAdapter', () => {
     expect(info.priceCents).toBe(1800);
     expect(info.available).toBe(true); // advisory availability failure defers to cart fulfilment (server-parity)
   });
+  it('lists saved cards through the bridge, dropping malformed entries (server parity)', async () => {
+    const called: string[] = [];
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({
+      '/storefront/v1/cart/saved-cards': { ok: true, status: 200, data: [
+        { id: 'CARD-1', brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2037 },
+        { id: 'CARD-2', brand: 'Visa', last4: '12' },
+        { id: '', brand: 'Visa', last4: '1111' },
+      ] },
+    }, called) }));
+    const cards = await adapter.listCards();
+    expect(cards).toEqual([{ id: 'CARD-1', brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2037 }]);
+    expect(called).toEqual(['/storefront/v1/cart/saved-cards']);
+  });
   it('arm() on an unavailable product downgrades to standby (same rule as the server app)', async () => {
     const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({}) }));
     adapter.inspect = async () => ({ code: '1', url: productUrl, title: 'X', imageUrl: '', priceCents: 100, deliveryCents: 0, available: false, stockLabel: '', requiresVariant: false } as never);
