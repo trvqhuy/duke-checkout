@@ -20,6 +20,8 @@ export function appUrlFor(query: Record<string, string> = {}): string {
   return search ? `${base}?${search}` : base;
 }
 
+export async function appPageIsOpen(): Promise<boolean> { return (await findAppTabId()) !== null; }
+
 async function findAppTabId(): Promise<number | null> {
   const base = chrome.runtime.getURL('app.html');
   try {

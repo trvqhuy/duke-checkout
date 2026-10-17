@@ -155,6 +155,9 @@ afterAll(async () => {
 describe('extension stage-1 integration', () => {
   it('loads, opens the app page, inspects, and arms cart-ready through the work tab', async () => {
     // 1. Bootstrap renders the settings card with defaults.
+    // Puppeteer locators poll with requestAnimationFrame, which a background tab
+    // throttles; drive the app tab in front.
+    await appPage.bringToFront();
     await appPage.waitForSelector('#field-quantity', { timeout: 20_000 });
     expect(await appPage.$eval('#field-quantity', element => (element as HTMLInputElement).value)).toBe('1');
     expect(await appPage.$eval('#field-maxTotalAUD', element => (element as HTMLInputElement).value)).toBe('1000.00');
@@ -167,9 +170,17 @@ describe('extension stage-1 integration', () => {
     await appPage.locator('#field-deliveryAddress-suburb').fill(profile.deliveryAddress.suburb);
     await appPage.select('#deliveryAddress-state', 'NSW');
     await appPage.locator('#field-deliveryAddress-postcode').fill(profile.deliveryAddress.postcode);
-    await appPage.locator('.profile-save-row .secondary-button').click();
-    const storedProfile = await appPage.evaluate(async () => (await chrome.storage.local.get(['dukeProfile'])).dukeProfile);
-    expect(storedProfile).toMatchObject({ firstName: profile.firstName, phone: profile.phone, deliveryAddress: { suburb: profile.deliveryAddress.suburb, state: 'NSW' } });
+    await appPage.locator('.profile-save-row [data-action="save-profile"]').click();
+    // profile.put is asynchronous: wait for the write instead of racing it.
+    const readProfile = () => appPage.evaluate(async () => (await chrome.storage.local.get(['dukeProfile'])).dukeProfile);
+    let storedProfile;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      storedProfile = await readProfile().catch(() => undefined);
+      if (storedProfile) break;
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    // profile.put validates and normalises the phone to E.164.
+    expect(storedProfile).toMatchObject({ firstName: profile.firstName, phone: '+61412345678', deliveryAddress: { suburb: profile.deliveryAddress.suburb, state: 'NSW' } });
 
     // 3. Inspect through the service worker → adapter → bridge → MAIN world.
     await appPage.locator('#field-productUrl').fill(productUrl);

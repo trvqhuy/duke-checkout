@@ -323,7 +323,7 @@ export default function App() {
         <section className="form-section">
           <div className="section-heading"><span className="section-number">03</span><div><h2>Delivery & contact</h2><p>Your details, stored on this computer.</p></div></div>
           <DeliveryFields profile={profile} setProfile={setProfile} errors={{}} />
-          <div className="profile-save-row"><button type="button" className="secondary-button" onClick={saveProfile} disabled={disabled}>{busy === 'profile' ? 'Saving…' : 'Save profile'}</button></div>
+          <div className="profile-save-row"><button type="button" className="secondary-button" onClick={saveProfile} disabled={disabled} data-action="save-profile">{busy === 'profile' ? 'Saving…' : 'Save profile'}</button><button type="button" className="secondary-button" onClick={() => void importBigWProfile()} disabled={disabled} data-action="import-profile">{busy === 'import' ? 'Importing…' : 'Import from BIG W'}</button></div>
           <p className="fine-print">Contact details stay on this computer. The signed-in BIG W account provides the checkout email.</p>
         </section>
         <section className="form-section">

@@ -8,7 +8,7 @@ import { RunManager } from './run-manager.ts';
 import { driverHandleFor } from './driver.ts';
 import { setBadge, badgeStateForRun } from './badge.ts';
 import { configureTriggers, registerContextMenus, registerCommands, registerAutoArm, dispatchTriggerSafely, armProduct, setLastHovered } from './triggers.ts';
-import { openAppPage } from './app-page.ts';
+import { openAppPage, appPageIsOpen } from './app-page.ts';
 import { registerNotifications } from './notify.ts';
 import { AppError, publicError } from '../../server/errors.ts';
 import type { GuardEventRecord } from '../lib/retailers/types.ts';
@@ -241,7 +241,9 @@ chrome.runtime.onInstalled.addListener(details => {
   // before any trigger can fire. A reinstall/update keeps the stored profile.
   if (details.reason === 'install') {
     void getProfile().then(async profile => {
-      if (!profile) await openAppPage({ onboarding: '1' });
+      // Do not hijack a tab the user already opened (and never race a page that
+      // is mid-setup): only auto-open setup when nothing is showing yet.
+      if (!profile && !(await appPageIsOpen())) await openAppPage({ onboarding: '1' });
     }).catch(() => undefined);
   }
 });
