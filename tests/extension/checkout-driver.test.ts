@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { handle, isCheckoutFrame, isFieldFrame, observeRebuilds } from '../../src/extension/content/checkout-driver.ts';
+import { handle, isCheckoutFrame, isFieldFrame, notifyFieldsChanged, observeRebuilds, onMessage } from '../../src/extension/content/checkout-driver.ts';
 
 function setLocation(url: string): void {
   Object.defineProperty(window, 'location', { value: new URL(url), configurable: true, writable: true });
@@ -282,11 +282,53 @@ describe('rebuild awareness', () => {
     observer?.disconnect();
   });
 
-  it('never throws when the runtime is unavailable', async () => {
-    vi.stubGlobal('chrome', undefined);
-    const observer = observeRebuilds(document.body, () => 1000);
-    document.body.appendChild(document.createElement('iframe'));
+  it('does not notify when the runtime id is unavailable', async () => {
+    const sendMessage = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('chrome', { runtime: { id: undefined, sendMessage } });
+    notifyFieldsChanged();
     await flush();
-    observer?.disconnect();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('runtime message responder contract', () => {
+  it('replies synchronously and returns false for a sync handler', () => {
+    setLocation('https://www.bigw.com.au/checkout/delivery');
+    const sendResponse = vi.fn();
+    const result = onMessage({ type: 'driver.ready' }, {} as chrome.runtime.MessageSender, sendResponse);
+    expect(result).toBe(false);
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ready: expect.any(Boolean) }));
+  });
+
+  it('replies via sendResponse asynchronously and returns true for an async handler', async () => {
+    vi.useFakeTimers();
+    try {
+      setLocation('https://www.bigw.com.au/checkout/delivery');
+      const label = document.createElement('label');
+      label.textContent = 'Afterpay';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      label.appendChild(radio);
+      document.body.appendChild(label);
+      const button = document.createElement('button');
+      button.textContent = 'Pay with Afterpay';
+      document.body.appendChild(button);
+      const sendResponse = vi.fn();
+      const result = onMessage({ type: 'driver.clickAfterpay' }, {} as chrome.runtime.MessageSender, sendResponse);
+      expect(result).toBe(true);
+      await vi.runAllTimersAsync();
+      expect(sendResponse).toHaveBeenCalledWith({ selected: true, clicked: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not throw synchronously when an async handler rejects', async () => {
+    setLocation('https://www.bigw.com.au/checkout/delivery');
+    vi.spyOn(document, 'querySelectorAll').mockImplementation(() => { throw new Error('boom'); });
+    const sendResponse = vi.fn();
+    expect(() => onMessage({ type: 'driver.clickAfterpay' }, {} as chrome.runtime.MessageSender, sendResponse)).not.toThrow();
+    await flush();
+    expect(sendResponse).toHaveBeenCalledWith(undefined);
   });
 });

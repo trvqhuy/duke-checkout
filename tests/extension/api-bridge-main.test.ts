@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
-import { resolveToken, pageRequest, pageContext, handleMessage, scopesForPath } from '../../src/extension/content/api-bridge-main.ts';
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
+import { resolveToken, pageRequest, pageContext, handleMessage, scopesForPath, __test, type ObservedEntry } from '../../src/extension/content/api-bridge-main.ts';
 
 const localStorageStub = (data: Record<string, string>) => {
   const store = new Map(Object.entries(data));
@@ -105,5 +105,114 @@ describe('api-bridge main world', () => {
     expect(scopesForPath('/pay/confirm', 'GET')).toEqual(['payment:manage', 'payment:authorise']);
     expect(scopesForPath('/storefront/v1/cart/create', 'POST')).toEqual(['cart:manage']);
     expect(scopesForPath('/storefront/v1/cart', 'GET')).toEqual(['cart:view']);
+  });
+});
+
+const binding = { cartId: 'CT_example', cartVersion: 4, totalCents: 2200, kind: 'new' as const, sessionId: 'current-session' };
+const payUrl = 'https://api.bigw.com.au/storefront/v1/cart/CT_example/pay';
+const payload = () => ({ cartId: 'CT_example', cartVersion: 4, transactions: { creditCardPaymentInfo: { amountInCents: 2200, sessionId: 'current-session' } } });
+
+function setupGuardWindow() {
+  const posted: unknown[] = [];
+  const original = vi.fn(async (input: string | URL | Request) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes('gr4vy.app')) return new Response('vault-ok', { status: 200 });
+    return Response.json({ orderNumber: 'ORD-1', status: 'CONFIRMED' });
+  });
+  const win = {
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    postMessage: (msg: unknown) => { posted.push(msg); },
+    fetch: original,
+    gr4vyAntiFraud: { f: 'fp-xyz' },
+  };
+  vi.stubGlobal('window', win as unknown as Window);
+  return { win, posted, original };
+}
+
+describe('api-bridge main-world payment guard and observer', () => {
+  beforeEach(() => { __test.reset(); vi.unstubAllGlobals(); });
+  afterEach(() => { __test.reset(); vi.unstubAllGlobals(); });
+
+  it('guard.enable blocks a violating /pay POST without hitting the network', async () => {
+    const { win, posted, original } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    const violating = { ...payload(), transactions: { creditCardPaymentInfo: { amountInCents: 9999, sessionId: 'current-session' } } };
+    await expect((win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(violating) })).rejects.toThrow(TypeError);
+    expect(original).not.toHaveBeenCalled();
+    expect(posted).toContainEqual({ channel: 'duke', kind: 'guard.event', event: { type: 'prevented', code: 'PAYMENT_CHANGED' } });
+  });
+
+  it('allows a matching /pay POST once and reports sent', async () => {
+    const { win, posted, original } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    const response = await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    expect(response.status).toBe(200);
+    expect(original).toHaveBeenCalledTimes(1);
+    expect(posted).toContainEqual({ channel: 'duke', kind: 'guard.event', event: { type: 'sent' } });
+  });
+
+  it('blocks a second /pay after a send as a duplicate', async () => {
+    const { win, original, posted } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    await expect((win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) })).rejects.toThrow(TypeError);
+    expect(original).toHaveBeenCalledTimes(1);
+    expect(posted).toContainEqual({ channel: 'duke', kind: 'guard.event', event: { type: 'prevented', code: 'PAYMENT_DUPLICATE' } });
+  });
+
+  it('only allows a finalize after a send and marks finalized', async () => {
+    const { win, original } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    const finalize = `${payUrl}/finalize`;
+    await expect((win.fetch as typeof fetch)(finalize, { method: 'POST', body: JSON.stringify({ cartId: 'CT_example' }) })).rejects.toThrow(TypeError);
+    await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    await (win.fetch as typeof fetch)(finalize, { method: 'POST', body: JSON.stringify({ cartId: 'CT_example', amountInCents: 2200 }) });
+    await expect((win.fetch as typeof fetch)(finalize, { method: 'POST', body: JSON.stringify({ cartId: 'CT_example' }) })).rejects.toThrow(TypeError);
+    expect(original).toHaveBeenCalledTimes(2);
+  });
+
+  it('observes payment and vault POSTs and returns them via observe.list', async () => {
+    const { win } = setupGuardWindow();
+    __test.installGuard();
+    const vaultUrl = 'https://api.wpay2.gr4vy.app/checkout/sessions/sess-1/card-details';
+    await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) });
+    await (win.fetch as typeof fetch)(vaultUrl, { method: 'POST', body: '{}' });
+    const listed = __test.handleControl({ kind: 'observe.list' }) as { entries: ObservedEntry[] };
+    expect(listed.entries).toHaveLength(2);
+    expect(listed.entries[0]).toMatchObject({ url: payUrl, method: 'POST', status: 200 });
+    expect(listed.entries[1]).toMatchObject({ url: vaultUrl, method: 'POST', status: 200, bodyText: 'vault-ok' });
+  });
+
+  it('records status 0 when an observed request fails at the network', async () => {
+    const posted: unknown[] = [];
+    const original = vi.fn(async () => { throw new Error('offline'); });
+    vi.stubGlobal('window', { addEventListener: () => undefined, removeEventListener: () => undefined, postMessage: (m: unknown) => { posted.push(m); }, fetch: original } as unknown as Window);
+    __test.handleControl({ kind: 'guard.enable', binding });
+    await expect((window.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify(payload()) })).rejects.toThrow('offline');
+    const listed = __test.handleControl({ kind: 'observe.list' }) as { entries: ObservedEntry[] };
+    expect(listed.entries).toContainEqual({ url: payUrl, method: 'POST', status: 0, bodyText: '' });
+    expect(posted).toContainEqual({ channel: 'duke', kind: 'guard.event', event: { type: 'uncertain' } });
+  });
+
+  it('guard.disable restores pass-through', async () => {
+    const { win, original, posted } = setupGuardWindow();
+    __test.handleControl({ kind: 'guard.enable', binding });
+    __test.handleControl({ kind: 'guard.disable' });
+    await (win.fetch as typeof fetch)(payUrl, { method: 'POST', body: JSON.stringify({ ...payload(), cartVersion: 5 }) });
+    expect(original).toHaveBeenCalledTimes(1);
+    expect(posted.some(msg => (msg as { kind?: string }).kind === 'guard.event')).toBe(false);
+  });
+
+  it('observe.antiFraud returns the page fingerprint', () => {
+    setupGuardWindow();
+    expect(__test.handleControl({ kind: 'observe.antiFraud' })).toEqual({ fingerprint: 'fp-xyz' });
+  });
+
+  it('handleMessage routes kind:control to handleControl', async () => {
+    setupGuardWindow();
+    const replies: unknown[] = [];
+    await handleMessage({ channel: 'duke', requestId: 'c1', kind: 'control', control: { kind: 'guard.enable', binding } }, msg => replies.push(msg));
+    expect(replies[0]).toMatchObject({ channel: 'duke', requestId: 'c1', result: { ok: true } });
   });
 });
