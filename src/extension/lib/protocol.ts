@@ -1,6 +1,7 @@
 export type RequestType =
   | 'bootstrap.get' | 'settings.get' | 'settings.put'
-  | 'profile.get' | 'profile.put' | 'cards.list'
+  | 'profile.get' | 'profile.put' | 'profile.import' | 'cards.list'
+  | 'card.session.put' | 'card.session.get' | 'card.session.clear'
   | 'inspect.start' | 'arm.start' | 'arm.clear' | 'arm.get'
   | 'run.start' | 'run.list' | 'run.cancel' | 'run.resolve';
 
@@ -10,7 +11,7 @@ export interface DukeResponse { id: string; ok: boolean; result?: unknown; error
 export type DukeEventType = 'run.update' | 'arm.update' | 'notice';
 export interface DukeEvent { type: DukeEventType; payload: unknown }
 
-const REQUEST_TYPES: RequestType[] = ['bootstrap.get', 'settings.get', 'settings.put', 'profile.get', 'profile.put', 'cards.list', 'inspect.start', 'arm.start', 'arm.clear', 'arm.get', 'run.start', 'run.list', 'run.cancel', 'run.resolve'];
+const REQUEST_TYPES: RequestType[] = ['bootstrap.get', 'settings.get', 'settings.put', 'profile.get', 'profile.put', 'profile.import', 'cards.list', 'card.session.put', 'card.session.get', 'card.session.clear', 'inspect.start', 'arm.start', 'arm.clear', 'arm.get', 'run.start', 'run.list', 'run.cancel', 'run.resolve'];
 
 export function encodeRequest(request: DukeRequest): unknown { return request; }
 export function decodeRequest(value: unknown): DukeRequest | null {

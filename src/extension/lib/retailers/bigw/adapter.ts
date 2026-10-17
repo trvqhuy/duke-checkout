@@ -55,7 +55,7 @@ import { bridgeRequest } from '../../../background/bridge-client.ts';
 import { scopesForPath } from '../../../content/api-bridge-main.ts';
 import type { BridgeHandle, DriverFrame, DriverHandle, RetailerAdapter } from '../types.ts';
 import type { PaymentBinding } from '../../../../shared/payment-check.ts';
-import type { ArmedCheckout, CartState, PaymentInput, PaymentOutcome, PreparedCheckout, ProductInfo, Profile, RunRequest, SavedCard, StageReporter } from '../../../../shared/types.ts';
+import type { Address, ArmedCheckout, CartState, PaymentInput, PaymentOutcome, PreparedCheckout, ProductInfo, Profile, RunRequest, SavedCard, StageReporter } from '../../../../shared/types.ts';
 
 interface Location { storeId: string; zone?: string; zoneType?: string }
 
@@ -258,6 +258,37 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     }; }).filter(card => card.id && /^\d{4}$/.test(card.last4));
   }
   async listCards(): Promise<SavedCard[]> { return this.savedCards(); }
+
+  // Port of the server BigWAdapter.importProfile() (src/server/browser/bigw.ts).
+  // The name/phone fallbacks, the `AU-` state strip, the forced country 'AU',
+  // the primary-address preference, and the saved-card normalisation are
+  // verbatim. Deliberate deviation: the server reads the live cart to prefer its
+  // delivery address (and cart.customer for the recipient); the extension has no
+  // page context for a cart, so the cart read is skipped and the primary address
+  // (or the first) is used. With no cart payload `cart.customer` is empty on the
+  // server too, so the remaining fallbacks are unchanged.
+  async importProfile(): Promise<{ profile: Profile; savedCards: SavedCard[] }> {
+    const handle = await this.acquire();
+    const [addressesData, accountData, cards] = await Promise.all([
+      this.req(handle, '/profile/v1/addresses'),
+      this.req(handle, '/profile/v1/profile'),
+      this.savedCards(),
+    ]);
+    const account = record(accountData);
+    const addresses = Array.isArray(addressesData) ? addressesData : [];
+    const address = record(addresses.find(item => record(item).primary === true) ?? addresses[0]);
+    const name = record(account.name), phone = record(account.phone);
+    const normalize = (value: Record<string, unknown>): Address => ({
+      line1: string(value.line1), line2: string(value.line2), suburb: string(value.suburb, string(value.town)),
+      postcode: string(value.postcode), state: string(value.state).replace('AU-', ''), country: 'AU',
+    });
+    return { profile: {
+      name: 'BIG W delivery', firstName: string(address.firstName, string(name.given)),
+      lastName: string(address.lastName, string(name.family)),
+      phone: string(address.phonenumber, string(phone.mobile)),
+      deliveryAddress: normalize(address), billingSame: true,
+    }, savedCards: cards };
+  }
 
   // -------------------------------------------------------------------------
   // Stage 2: driver-backed checkout (fill / pay / reveal / clear / afterpay)

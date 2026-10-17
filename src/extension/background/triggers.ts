@@ -14,6 +14,7 @@ import { getSettings, getProfile, getSessionCard, type DukeSettings } from '../l
 import { isProductUrl } from '../content/link-scout.ts';
 import { isEvent } from '../lib/protocol.ts';
 import { getArmed } from './state.ts';
+import { NOTIFICATION_ICON } from './notify.ts';
 import type { ArmedCheckout, RunRequest, StageReporter } from '../../shared/types.ts';
 
 export type TriggerAction = 'checkout' | 'arm';
@@ -95,14 +96,13 @@ function broadcast(event: { type: string; payload: unknown }): void {
   chrome.runtime.sendMessage(event).catch(() => undefined);
 }
 
-// TODO(notifications task): unify with notify.ts once that module lands.
-// A 1x1 transparent PNG keeps the basic notification valid without shipping an
-// icon asset.
-const HINT_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+// The icon lives in notify.ts so the hint and the outcome notifications share
+// one mark. notify.ts imports openAppPage from here, so this is a module cycle
+// with all uses deferred (inside functions), which ESM resolves safely.
 function notifyHint(message: string): void {
   try {
     void chrome.notifications.create({
-      type: 'basic', iconUrl: HINT_ICON, title: 'Duke Checkout', message,
+      type: 'basic', iconUrl: NOTIFICATION_ICON, title: 'Duke Checkout', message,
     }).catch(() => undefined);
   } catch { /* notifications unavailable */ }
 }

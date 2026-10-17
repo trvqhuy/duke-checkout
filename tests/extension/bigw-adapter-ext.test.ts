@@ -115,4 +115,44 @@ describe('BigWExtensionAdapter', () => {
     const runAdapter: RunAdapter = adapter;
     expect(runAdapter.armedState?.()).toBeNull();
   });
+
+  it('imports a profile and saved cards through the bridge with the server normalisation', async () => {
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({
+      '/profile/v1/addresses': { ok: true, status: 200, data: [
+        // Not primary, so it must be ignored even though it comes first.
+        { primary: false, line1: 'Old', suburb: 'Oldton', postcode: '3000', state: 'AU-NSW' },
+        { primary: true, line1: '1 Collins St', line2: 'Unit 4', suburb: 'clayton', town: 'Clayton', postcode: '3168', state: 'AU-VIC', firstName: 'Ada', lastName: 'Lovelace', phonenumber: '0412345678' },
+      ] },
+      '/profile/v1/profile': { ok: true, status: 200, data: { name: { given: 'Grace', family: 'Hopper' }, phone: { mobile: '0400000000' } } },
+      '/storefront/v1/cart/saved-cards': { ok: true, status: 200, data: [ { id: 'CARD-1', brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2037 } ] },
+    }) }));
+    const { profile: imported, savedCards } = await adapter.importProfile();
+    // The `AU-` prefix is stripped, the country is forced to AU, and the
+    // primary address's own name/phone win over the account's (server parity).
+    expect(imported).toEqual({
+      name: 'BIG W delivery', firstName: 'Ada', lastName: 'Lovelace', phone: '0412345678',
+      deliveryAddress: { line1: '1 Collins St', line2: 'Unit 4', suburb: 'clayton', postcode: '3168', state: 'VIC', country: 'AU' },
+      billingSame: true,
+    });
+    expect(savedCards).toEqual([{ id: 'CARD-1', brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2037 }]);
+  });
+
+  it('importProfile never reads the cart and falls back to the account name/phone (documented deviation)', async () => {
+    const called: string[] = [];
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender: stubSender({
+      // No primary flag and no address-level names/phone: the first address is
+      // used and the account name/phone fill in (on the server cart.customer is
+      // empty too, so the same fallbacks apply).
+      '/profile/v1/addresses': { ok: true, status: 200, data: [ { line1: '9 Queen St', suburb: 'Brisbane', town: 'Brisbane', postcode: '4000', state: 'QLD' } ] },
+      '/profile/v1/profile': { ok: true, status: 200, data: { name: { given: 'Grace', family: 'Hopper' }, phone: { mobile: '0400111222' } } },
+      '/storefront/v1/cart/saved-cards': { ok: true, status: 200, data: [] },
+    }, called) }));
+    const { profile: imported } = await adapter.importProfile();
+    expect(imported.firstName).toBe('Grace');
+    expect(imported.lastName).toBe('Hopper');
+    expect(imported.phone).toBe('0400111222');
+    expect(imported.deliveryAddress).toEqual({ line1: '9 Queen St', line2: '', suburb: 'Brisbane', postcode: '4000', state: 'QLD', country: 'AU' });
+    // No cart path is requested: the stub throws on any unexpected path.
+    expect([...called].sort()).toEqual(['/profile/v1/addresses', '/profile/v1/profile', '/storefront/v1/cart/saved-cards']);
+  });
 });

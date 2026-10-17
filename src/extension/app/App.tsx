@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { STAGES, type ArmedCheckout, type CheckoutRun, type PaymentInput, type ProductInfo, type Profile, type RunMode, type SavedCard, type Stage } from '../../shared/types.ts';
 import { DeliveryFields, Field, Icon, PaymentFields, RunHistory, StatusBadge, duration, terminal, type CardForm } from '../../client/components.tsx';
-import type { DukeSettings } from '../lib/storage.ts';
+import type { DukeSettings, SessionCard } from '../lib/storage.ts';
 import { mergeRuns } from '../../client/run-state.ts';
 import { connectRunPort, onEvent, request } from './transport.ts';
 
@@ -42,6 +42,10 @@ export default function App() {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [now, setNow] = useState(Date.now());
+  const [onboarding, setOnboarding] = useState(false);
+  const [rememberCard, setRememberCard] = useState(true);
+  const [sessionCard, setSessionCard] = useState<SessionCard | null>(null);
+  const [importedCount, setImportedCount] = useState<number | null>(null);
   const runsRef = useRef<CheckoutRun[]>([]);
   const requestId = useRef<string | null>(null);
   const runPort = useRef<(() => void) | null>(null);
@@ -56,6 +60,12 @@ export default function App() {
 
   useEffect(() => {
     let closed = false;
+    // First-run and trigger intents travel in the query string (the service
+    // worker opens app.html?onboarding=1&product=<url> from a trigger).
+    const params = new URLSearchParams(location.search);
+    const productParam = params.get('product');
+    if (params.get('onboarding') === '1') setOnboarding(true);
+    if (productParam) setProductUrl(productParam);
     const unsubscribe = onEvent(event => {
       if (event.type === 'arm.update') setArmed(event.payload as ArmedCheckout | null);
       else if (event.type === 'run.update') {
@@ -68,13 +78,21 @@ export default function App() {
       setSettings(data.settings);
       if (data.profile) setProfile(data.profile);
       setArmed(data.armed);
-      if (data.armed?.productUrl && !productUrl) setProductUrl(data.armed.productUrl);
+      if (data.armed?.productUrl && !productParam) setProductUrl(data.armed.productUrl);
       setReady(true);
     }).catch(failure => { if (!closed) { setError(failure instanceof Error ? failure.message : 'Could not reach the extension background.'); setReady(true); } });
     void request<CheckoutRun[]>('run.list').then(list => { if (!closed) receiveRuns(list); }).catch(() => undefined);
     void request<SavedCard[]>('cards.list').then(list => { if (!closed && list.length) setCards(list); }).catch(() => undefined);
+    void request<SessionCard | null>('card.session.get').then(stored => { if (!closed && stored) setSessionCard(stored); }).catch(() => undefined);
     return () => { closed = true; unsubscribe(); };
   }, []);
+
+  // A remembered card is reused the moment the selected mode needs one, which
+  // is what lets a later one-click trigger start without the app form.
+  useEffect(() => {
+    if (!settings || !sessionCard || !modeNeedsCard(settings.mode)) return;
+    setCard(current => (current.number || current.kind === 'saved' ? current : { kind: 'new', number: sessionCard.number, expiry: sessionCard.expiry, cvv: sessionCard.cvv, cardId: '' }));
+  }, [settings, sessionCard]);
 
   const activeRun = runs.find(isRunning);
   const active = !!activeRun;
@@ -141,6 +159,30 @@ export default function App() {
     await run('cards', async () => setCards(await request<SavedCard[]>('cards.list')));
   }
 
+  // Onboarding: pull the BIG W account's address/contact, persist it as the
+  // profile, and show how many saved cards came back.
+  async function importBigWProfile() {
+    await run('import', async () => {
+      const imported = await request<{ profile: Profile; savedCards: SavedCard[] }>('profile.import');
+      setProfile(await request<Profile>('profile.put', imported.profile));
+      setCards(imported.savedCards);
+      setImportedCount(imported.savedCards.length);
+    });
+  }
+  // Store the entered card in chrome.storage.session so later one-click runs can
+  // use it without the form.
+  async function rememberSessionCard() {
+    await run('remember', async () => {
+      const stored = { number: card.number, expiry: card.expiry, cvv: card.cvv };
+      await request('card.session.put', stored);
+      setSessionCard(stored);
+    });
+  }
+  function finishSetup() {
+    history.replaceState({}, '', location.pathname);
+    setOnboarding(false);
+  }
+
   async function start() {
     if (!settings || startDisabled) return;
     runPort.current?.();
@@ -150,6 +192,11 @@ export default function App() {
     let accepted = false;
     try {
       requestId.current ??= crypto.randomUUID();
+      // Persist a new card for this browser session before starting, so a later
+      // trigger can reuse it. Best-effort: a storage failure must not stop the run.
+      if (cardRequired && card.kind === 'new' && rememberCard && card.number.trim()) {
+        await request('card.session.put', { number: card.number, expiry: card.expiry, cvv: card.cvv }).catch(() => undefined);
+      }
       const payment: PaymentInput | undefined = cardRequired
         ? (card.kind === 'new' ? { kind: 'new', number: card.number, expiry: card.expiry, cvv: card.cvv } : { kind: 'saved', cardId: card.cardId, cvv: card.cvv })
         : undefined;
@@ -211,6 +258,19 @@ export default function App() {
       {error && <div className="feedback error-feedback" role="alert"><span className="feedback-mark">!</span><div><strong>{error}</strong></div><button type="button" className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><Icon name="close" size={16} /></button></div>}
       <div className="connection-guide"><div className="guide-top"><Icon name="browser" size={18} /><div><strong>Running inside your Chrome</strong><p>The session is local — settings, profile, and history stay on this computer.</p></div></div></div>
       {settings && <>
+        {onboarding && <section className="form-section onboarding-panel">
+          <div className="section-heading"><span className="section-number">00</span><div><h2>Set up Duke</h2><p>Import your BIG W details, then store a card so one-click runs need no form.</p></div></div>
+          <div className="summary-actions">
+            <button type="button" className="secondary-button" onClick={() => void importBigWProfile()} disabled={disabled}>{busy === 'import' ? 'Importing…' : 'Import my BIG W profile'}</button>
+          </div>
+          {importedCount !== null && <p className="fine-print">Imported {importedCount} saved {importedCount === 1 ? 'card' : 'cards'} from your BIG W account.</p>}
+          <PaymentFields card={card} setCard={setCard} cards={cards} errors={{}} refresh={() => void refreshCards()} refreshing={busy === 'cards'} />
+          <label className="check-row"><input type="checkbox" checked={rememberCard} onChange={event => setRememberCard(event.target.checked)} /><span>Remember this card for this browser session</span></label>
+          <div className="summary-actions">
+            <button type="button" className="secondary-button" onClick={() => void rememberSessionCard()} disabled={disabled || !cardComplete}>{busy === 'remember' ? 'Saving…' : 'Save card for one-click runs'}</button>
+            <button type="button" className="primary-button" onClick={finishSetup}>Finish setup</button>
+          </div>
+        </section>}
         <section className="form-section">
           <div className="section-heading"><span className="section-number">01</span><div><h2>Settings</h2><p>Defaults used by every inspection and checkout.</p></div></div>
           <div className="quantity-budget">
@@ -256,7 +316,10 @@ export default function App() {
         <section className="form-section">
           <div className="section-heading"><span className="section-number">04</span><div><h2>Start a checkout</h2><p>{cardRequired ? 'Card details are used for this run only.' : 'No card details are needed for this mode.'}</p></div></div>
           {cardRequired
-            ? <PaymentFields card={card} setCard={setCard} cards={cards} errors={{}} refresh={() => void refreshCards()} refreshing={busy === 'cards'} />
+            ? <>
+                <PaymentFields card={card} setCard={setCard} cards={cards} errors={{}} refresh={() => void refreshCards()} refreshing={busy === 'cards'} />
+                {card.kind === 'new' && <label className="check-row"><input type="checkbox" checked={rememberCard} onChange={event => setRememberCard(event.target.checked)} /><span>Remember this card for this browser session</span></label>}
+              </>
             : <div className="prepare-note"><Icon name="lock" size={16} /><p>{mode === 'afterpay' ? 'No card needed. Duke prepares the cart, selects Afterpay, and opens Afterpay’s checkout for you to sign in and confirm.' : 'No card details needed. Duke prepares the cart, applies your details, and opens the secure payment step.'}</p></div>}
           <div className="summary-actions">
             <button type="button" className="primary-button start-button" onClick={() => void start()} disabled={startDisabled}><span>{busy === 'start' ? 'Starting…' : mode === 'prepare' ? 'Prepare checkout' : mode === 'assist' ? "Fill card (I'll pay)" : mode === 'afterpay' ? 'Open Afterpay' : 'Purchase automatically'}</span>{busy === 'start' ? <span className="spinner" /> : <Icon name="arrow" size={20} />}</button>

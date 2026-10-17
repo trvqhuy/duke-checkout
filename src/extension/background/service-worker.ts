@@ -1,5 +1,5 @@
 import { decodeRequest, encodeResponse, isEvent, type DukeRequest } from '../lib/protocol.ts';
-import { getSettings, putSettings, getProfile, putProfile, getHistory, DEFAULT_SETTINGS } from '../lib/storage.ts';
+import { getSettings, putSettings, getProfile, putProfile, getHistory, getSessionCard, putSessionCard, clearSessionCard, DEFAULT_SETTINGS, type SessionCard } from '../lib/storage.ts';
 import { acquireWorkTab, waitForBridgeReady } from './work-tab.ts';
 import { getArmed, setArmed, clearArmed } from './state.ts';
 import { registerKeeper } from './keeper.ts';
@@ -8,6 +8,7 @@ import { RunManager } from './run-manager.ts';
 import { driverHandleFor } from './driver.ts';
 import { setBadge, badgeStateForRun } from './badge.ts';
 import { configureTriggers, registerContextMenus, registerCommands, registerAutoArm, dispatchTrigger, armProduct, setLastHovered } from './triggers.ts';
+import { registerNotifications } from './notify.ts';
 import { AppError, publicError } from '../../server/errors.ts';
 import type { ArmedCheckout, RunRequest } from '../../shared/types.ts';
 
@@ -33,11 +34,25 @@ const adapter = new BigWExtensionAdapter(
   },
 );
 
+// Terminal statuses after which the remembered session card may be cleared.
+const TERMINAL_STATUSES = new Set(['ready', 'succeeded', 'failed', 'cancelled', 'payment_unknown']);
+// `cardClearAfterOrder` support: drop the one-run card from session storage once
+// a run has finished, but only when the user asked for it. Best-effort — the
+// session store is wiped when the browser closes regardless.
+async function clearCardAfterOrder(): Promise<void> {
+  try { if ((await getSettings()).cardClearAfterOrder) await clearSessionCard(); }
+  catch { /* best effort */ }
+}
+
 // The RunManager is a module singleton. init() loads history and runs the
 // server's interrupted-run recovery; it runs exactly once (memoized promise)
 // even though a freshly-spawned service worker re-evaluates this module.
-// The update hook drives the toolbar badge (sendMessage does not self-deliver).
-const manager = new RunManager(adapter, run => setBadge(badgeStateForRun(run)));
+// The update hook drives the toolbar badge and the outcome notification
+// (sendMessage does not self-deliver, so the worker reacts in-process).
+const manager = new RunManager(adapter, registerNotifications(run => {
+  setBadge(badgeStateForRun(run));
+  if (TERMINAL_STATUSES.has(run.status)) void clearCardAfterOrder();
+}));
 let managerInit: Promise<void> | null = null;
 function initManager(): Promise<void> {
   return (managerInit ??= (async () => {
@@ -128,6 +143,12 @@ async function handle(request: DukeRequest): Promise<unknown> {
     case 'settings.put': return await putSettings(request.payload as never);
     case 'profile.get': return await getProfile();
     case 'profile.put': return await putProfile(request.payload as never);
+    case 'profile.import': return await adapter.importProfile();
+    // Card material stays behind the service worker: the app page never touches
+    // chrome.storage.session directly for the one-run card.
+    case 'card.session.put': { await putSessionCard(request.payload as SessionCard); return { ok: true }; }
+    case 'card.session.get': return await getSessionCard();
+    case 'card.session.clear': { await clearSessionCard(); return { ok: true }; }
     case 'inspect.start': {
       const { productUrl, profile } = request.payload as { productUrl: string; profile: never };
       return await adapter.inspect(productUrl, profile);

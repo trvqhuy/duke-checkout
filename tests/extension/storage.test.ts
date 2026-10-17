@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getSettings, putSettings, DEFAULT_SETTINGS, getProfile, putProfile, getHistory, pushRun, type DukeSettings, type DukeProfileRecord } from '../../src/extension/lib/storage.ts';
+import { getSettings, putSettings, DEFAULT_SETTINGS, getProfile, putProfile, getHistory, pushRun, getSessionCard, putSessionCard, clearSessionCard, type DukeSettings, type DukeProfileRecord } from '../../src/extension/lib/storage.ts';
 import type { CheckoutRun } from '../../src/shared/types.ts';
 import { productUrl } from '../fixtures.ts';
 
 const mem: Record<string, unknown> = {};
-const chromeStub = { storage: { local: {
-  get: async (keys: string[]) => Object.fromEntries(keys.filter(k => k in mem).map(k => [k, mem[k]])),
-  set: async (items: Record<string, unknown>) => { Object.assign(mem, items); },
-} } };
-(globalThis as Record<string, unknown>).chrome = chromeStub;
+const session: Record<string, unknown> = {};
+const area = (store: Record<string, unknown>) => ({
+  get: async (keys: string[]) => Object.fromEntries(keys.filter(k => k in store).map(k => [k, store[k]])),
+  set: async (items: Record<string, unknown>) => { Object.assign(store, items); },
+  remove: async (keys: string[]) => { for (const key of keys) delete store[key]; },
+});
+(globalThis as Record<string, unknown>).chrome = { storage: { local: area(mem), session: area(session) } };
 
 describe('settings storage', () => {
   beforeEach(() => { for (const k of Object.keys(mem)) delete mem[k]; });
@@ -61,5 +63,25 @@ describe('profile + history storage', () => {
     const history = await getHistory();
     expect(history).toHaveLength(100);
     expect(history[0].id).toBe('run-104');
+  });
+});
+
+describe('session card storage', () => {
+  beforeEach(() => { for (const k of Object.keys(session)) delete session[k]; });
+  it('round-trips through session storage only', async () => {
+    const card = { number: '4111111111111111', expiry: '12/30', cvv: '123' };
+    await putSessionCard(card);
+    expect(await getSessionCard()).toEqual(card);
+    expect(session.dukeCard).toEqual(card);
+  });
+  it('returns null for a malformed stored card', async () => {
+    session.dukeCard = { number: '4111' };
+    expect(await getSessionCard()).toBeNull();
+  });
+  it('clears the stored card', async () => {
+    await putSessionCard({ number: '4111111111111111', expiry: '12/30', cvv: '123' });
+    await clearSessionCard();
+    expect(await getSessionCard()).toBeNull();
+    expect(session.dukeCard).toBeUndefined();
   });
 });
