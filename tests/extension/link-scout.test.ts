@@ -94,6 +94,30 @@ describe('hover chip', () => {
     expect(__test.chipVisible()).toBe(true);
     expect(chip?.style.left).toBe('300px');
   });
+
+  it('clamps with the measured chip width so it stays inside the right edge', async () => {
+    vi.useFakeTimers();
+    const viewport = window.innerWidth;
+    const anchor = makeAnchor(PRODUCT);
+    vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect(viewport - 24, 20));
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    const chip = __test.getShadowRoot()?.querySelector<HTMLElement>('.duke-chip');
+    expect(chip).toBeTruthy();
+
+    const width = 180;
+    vi.spyOn(chip as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      ...rect(0, 0),
+      width,
+      right: width,
+    } as DOMRect);
+    __test.showChip();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const left = parseFloat((chip as HTMLElement).style.left);
+    expect(left + width).toBeLessThanOrEqual(viewport);
+    expect(left).toBe(viewport - width);
+  });
 });
 
 describe('dismissal', () => {
@@ -116,6 +140,64 @@ describe('dismissal', () => {
     const chip = __test.getShadowRoot()?.querySelector<HTMLElement>('.duke-chip');
     unhover(anchor, chip);
     await vi.advanceTimersByTimeAsync(200);
+    expect(__test.chipVisible()).toBe(true);
+  });
+
+  it('stays visible when an intervening element fires mouseover in the same tick', async () => {
+    vi.useFakeTimers();
+    const anchor = makeAnchor(PRODUCT);
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(__test.chipVisible()).toBe(true);
+
+    const intervening = document.createElement('div');
+    document.body.appendChild(intervening);
+    unhover(anchor, intervening);
+    hover(intervening, anchor);
+    expect(__test.chipVisible()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(__test.chipVisible()).toBe(true);
+    await vi.advanceTimersByTimeAsync(120);
+    expect(__test.chipVisible()).toBe(false);
+  });
+
+  it('stays visible when the intervening mouseover arrives within the grace', async () => {
+    vi.useFakeTimers();
+    const anchor = makeAnchor(PRODUCT);
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(__test.chipVisible()).toBe(true);
+
+    const intervening = document.createElement('div');
+    document.body.appendChild(intervening);
+    unhover(anchor, intervening);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(__test.chipVisible()).toBe(true);
+
+    hover(intervening, anchor);
+    expect(__test.chipVisible()).toBe(true);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(__test.chipVisible()).toBe(true);
+    await vi.advanceTimersByTimeAsync(120);
+    expect(__test.chipVisible()).toBe(false);
+  });
+
+  it('stays visible past the grace when crossing an intervening element into the chip', async () => {
+    vi.useFakeTimers();
+    const anchor = makeAnchor(PRODUCT);
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    const chip = __test.getShadowRoot()?.querySelector<HTMLElement>('.duke-chip') ?? null;
+
+    const intervening = document.createElement('div');
+    document.body.appendChild(intervening);
+    unhover(anchor, intervening);
+    hover(intervening, anchor);
+    unhover(intervening, chip);
+    hover(chip as Element, intervening);
+
+    await vi.advanceTimersByTimeAsync(300);
     expect(__test.chipVisible()).toBe(true);
   });
 

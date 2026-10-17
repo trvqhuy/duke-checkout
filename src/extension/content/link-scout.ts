@@ -138,11 +138,20 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+const FALLBACK_CHIP_WIDTH = 220;
+
+function measuredChipWidth(chip: HTMLElement): number {
+  const rect = chip.getBoundingClientRect?.();
+  const measured = rect ? rect.width : 0;
+  return measured > 0 ? measured : FALLBACK_CHIP_WIDTH;
+}
+
 function positionChip(chip: HTMLElement, anchor: Element): void {
   const rect = anchor.getBoundingClientRect();
   const viewportWidth = typeof window === 'undefined' ? 0 : window.innerWidth || 0;
   const viewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight || 0;
-  const left = clamp(rect.left, 4, Math.max(4, viewportWidth - 220));
+  const chipWidth = measuredChipWidth(chip);
+  const left = clamp(rect.left, 4, Math.max(4, viewportWidth - chipWidth));
   const top = clamp(rect.bottom + 8, 4, Math.max(4, viewportHeight - 44));
   chip.style.left = `${left}px`;
   chip.style.top = `${top}px`;
@@ -191,12 +200,15 @@ function inChip(node: Node | null | undefined): boolean {
 }
 
 export function handleMouseOver(event: Event): void {
-  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
   const target = event?.target as Element | null;
-  if (inChip(target)) return;
+  if (inChip(target)) {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    return;
+  }
   const anchor = target?.closest?.('a[href]') ?? null;
   const url = anchor ? anchorUrl(anchor) : '';
-  if (!anchor || !isProductUrl(url)) { hideChip(); return; }
+  if (!anchor || !isProductUrl(url)) { scheduleHide(); return; }
+  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
   currentAnchor = anchor;
   currentUrl = url;
   if (showTimer) clearTimeout(showTimer);
