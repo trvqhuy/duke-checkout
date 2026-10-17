@@ -131,17 +131,45 @@ async function chipPresent(page: Page): Promise<boolean> {
     .some(element => !!element.shadowRoot?.querySelector('.duke-chip')));
 }
 
+// A trusted pointer move: CDP Input produces a real (isTrusted) mouseover, the
+// only kind the chip now accepts. A synthetic dispatchEvent would be ignored.
 async function hoverProductLink(page: Page, selector: string, timeout = 20_000): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    await page.hover(selector);
+    const point = await page.$eval(selector, (el) => {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    });
+    await page.mouse.move(point.x, point.y);
     await sleep(400); // clears the chip's 200 ms show delay
     if (await chipPresent(page)) return;
   }
   throw new Error(`hover chip never appeared after hovering ${selector}`);
 }
 
+// Reads the button's viewport centre through the chip's (open) shadow root; it
+// does not click. Used by the trusted click path and the synthetic-click test.
+async function chipButtonCenter(page: Page, selector: string): Promise<{ x: number; y: number }> {
+  return page.evaluate((target) => {
+    const host = Array.from(document.querySelectorAll('*'))
+      .find(element => !!element.shadowRoot?.querySelector('.duke-chip'));
+    const button = host?.shadowRoot?.querySelector(target) as HTMLElement | null;
+    if (!button) throw new Error(`chip button ${target} not found inside the shadow root`);
+    const rect = button.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) throw new Error(`chip button ${target} has no clickable area`);
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }, selector);
+}
+
+// A real user click: page.mouse.click drives CDP Input, so the chip button sees
+// an isTrusted click — exactly the gesture the guard requires.
 async function clickChip(page: Page, selector: string): Promise<void> {
+  const { x, y } = await chipButtonCenter(page, selector);
+  await page.mouse.click(x, y);
+}
+
+// What a hostile page script can do: element.click() yields isTrusted:false.
+async function syntheticClickChip(page: Page, selector: string): Promise<void> {
   await page.evaluate((target) => {
     const host = Array.from(document.querySelectorAll('*'))
       .find(element => !!element.shadowRoot?.querySelector('.duke-chip'));
@@ -228,6 +256,19 @@ describe('extension stage-3 integration', () => {
     expect(fixture.payPosts).toBe(0);
     expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
   }, 120_000);
+
+  it('rejects a synthetic chip click on a foreign page — no run starts', async () => {
+    const beforeIds = new Set((await runList()).map(run => run.id));
+    await foreignPage.bringToFront();
+    await hoverProductLink(foreignPage, '#product-link');
+    // The chip is up, but this is what a hostile page can do: page-script .click().
+    await syntheticClickChip(foreignPage, '.duke-chip-checkout');
+    await sleep(1_500);
+    const after = new Set((await runList()).map(run => run.id));
+    expect([...after].filter(id => !beforeIds.has(id))).toEqual([]);
+    expect(fixture.payPosts).toBe(0);
+    expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
+  }, 60_000);
 
   it('auto-arm on product-page navigation arms after the debounce with no click', async () => {
     await seedState({ settings: { ...SETTINGS, autoArm: true } });

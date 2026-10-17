@@ -163,9 +163,7 @@ async function handle(request: DukeRequest): Promise<unknown> {
       // calls the adapter (which publishes into the armed store + session
       // storage), and broadcasts arm.update.
       const input = request.payload as RunRequest;
-      const armed = await armProduct(input.productUrl, input);
-      setBadge('armed');
-      return armed;
+      return await armProduct(input.productUrl, input);
     }
     case 'arm.clear': adapter.disarm(); broadcast({ type: 'arm.update', payload: null }); setBadge('idle'); return { ok: true };
     case 'arm.get': return armedCache;

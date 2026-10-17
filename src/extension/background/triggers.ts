@@ -15,6 +15,7 @@ import { isProductUrl } from '../lib/product-url.ts';
 import { isEvent } from '../lib/protocol.ts';
 import { configureAppPage, ensureAppPage, openAppPage } from './app-page.ts';
 import { getArmed } from './state.ts';
+import { setBadge } from './badge.ts';
 import { NOTIFICATION_ICON } from './notify.ts';
 import type { ArmedCheckout, RunRequest, StageReporter } from '../../shared/types.ts';
 
@@ -76,6 +77,23 @@ export function scheduleAutoArm(tabId: number, run: () => void, delay = AUTO_ARM
   autoArmTimers.set(tabId, setTimeout(() => { autoArmTimers.delete(tabId); run(); }, delay));
 }
 
+// A hard floor on how often auto-arm may fire across ALL tabs: a burst of
+// product-page navigations (opening several tabs, a redirect chain) collapses
+// to one arm instead of one retailer API call per tab.
+export const AUTO_ARM_MIN_INTERVAL_MS = 5_000;
+let lastAutoArmAt = 0;
+
+// Claims the single global auto-arm slot. Returns false, leaving the slot
+// untouched, when the previous arm was less than AUTO_ARM_MIN_INTERVAL_MS ago.
+// `now` is injectable so tests can drive it deterministically.
+export function claimAutoArmSlot(now: number = Date.now()): boolean {
+  if (now - lastAutoArmAt < AUTO_ARM_MIN_INTERVAL_MS) return false;
+  lastAutoArmAt = now;
+  return true;
+}
+
+export function resetAutoArmSlots(): void { lastAutoArmAt = 0; }
+
 // --- injected collaborators -------------------------------------------------
 // The service worker owns the adapter (with its armed store) and the run
 // manager singleton, so it injects them here rather than this module building
@@ -133,6 +151,9 @@ export async function armProduct(url: string, provided?: RunRequest): Promise<Ar
     };
   }
   const armed = await adapter.arm(input, () => undefined, new AbortController().signal);
+  // One badge writer for every arm path (chip, menu, shortcut, auto-arm, RPC):
+  // arming means "armed". Disarming stays with arm.clear's own setBadge('idle').
+  setBadge('armed');
   broadcast({ type: 'arm.update', payload: armed });
   return armed;
 }
@@ -146,7 +167,16 @@ export async function dispatchTrigger(action: TriggerAction, url: string, _tabId
   const plan = triggerPlan({ settings, hasProfile: !!profile, hasCard }, action);
 
   if (plan === 'open-onboarding') { await openAppPage({ onboarding: '1', product: url }); return; }
-  if (plan === 'open-app') { await openAppPage({ product: url }); return; }
+  if (plan === 'open-app') {
+    // triggerPlan returns 'open-app' for two reasons: confirm-before-pay wants
+    // the user to review, or a card-mode has no card. Only the missing-card case
+    // needs the setup panel, so the user can enter a card; a review keeps the
+    // plain product hand-off.
+    if (!settings.confirmBeforePay && modeNeedsCard(settings.mode) && !card) {
+      await openAppPage({ onboarding: '1', product: url }); return;
+    }
+    await openAppPage({ product: url }); return;
+  }
   if (plan === 'arm') {
     try { await armProduct(url); }
     catch (error) { console.warn('[duke] arm trigger failed', error); notifyHint(error instanceof Error ? error.message : 'Could not arm this product right now.'); }
@@ -205,10 +235,16 @@ export function registerAutoArm(): void {
     if (changeInfo.status !== 'complete' || !tab.url || !isProductUrl(tab.url)) return;
     const url = tab.url;
     void (async () => {
+      // Never auto-arm while a run is in flight: the work tab and the armed
+      // store belong to that run, and arming would fight it.
+      if (deps?.manager.activeRunId) return;
       const settings = await getSettings();
       if (!settings.autoArm) return;
       const armed = await getArmed().catch(() => null);
       if (!shouldAutoArm(settings, armed, url)) return;
+      // One arm per AUTO_ARM_MIN_INTERVAL_MS across every tab bounds retailer
+      // API calls even when many product pages open at once.
+      if (!claimAutoArmSlot()) return;
       scheduleAutoArm(tabId, () => {
         void armProduct(url).catch(error => console.warn('[duke] auto-arm failed', error));
       });

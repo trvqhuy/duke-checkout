@@ -94,6 +94,9 @@ function ensureChip(): HTMLElement {
   if (chipEl) return chipEl;
   host = document.createElement('div');
   host.style.cssText = 'position: fixed; z-index: 2147483647; top: 0; left: 0; width: 0; height: 0;';
+  // mode: 'open' lets the Stage-3 integration test read the chip's button
+  // coordinates; it is NOT the security boundary. The isTrusted guards below
+  // are: an open shadow root still only accepts gestures the user made.
   shadow = host.attachShadow({ mode: 'open' });
 
   const wrapper = document.createElement('div');
@@ -115,7 +118,10 @@ function ensureChip(): HTMLElement {
   checkout.textContent = 'Checkout now';
   checkout.style.cssText = 'cursor: pointer; border: 0; border-radius: 999px; padding: 4px 10px;'
     + ' background: #f5c518; color: #111; font: inherit; font-weight: 600;';
-  checkout.addEventListener('click', () => trigger('trigger.checkout'));
+  // A page script can synthesize a click on this button, and with a remembered
+  // session card that would be a purchase with no user gesture. Only gestures
+  // the browser itself produced are honoured.
+  checkout.addEventListener('click', event => { if (!event.isTrusted) return; trigger('trigger.checkout'); });
 
   const arm = document.createElement('button');
   arm.type = 'button';
@@ -123,7 +129,7 @@ function ensureChip(): HTMLElement {
   arm.textContent = 'Arm';
   arm.style.cssText = 'cursor: pointer; border: 1px solid #fff; border-radius: 999px; padding: 4px 10px;'
     + ' background: transparent; color: #fff; font: inherit;';
-  arm.addEventListener('click', () => trigger('trigger.arm'));
+  arm.addEventListener('click', event => { if (!event.isTrusted) return; trigger('trigger.arm'); });
 
   chip.append(label, checkout, arm);
   wrapper.appendChild(chip);
@@ -199,8 +205,18 @@ function inChip(node: Node | null | undefined): boolean {
   return !!shadow && root === shadow;
 }
 
+// A hostile page can dispatch `mouseover` on a product anchor to force the chip
+// to appear under the user's cursor. Only the browser's own trusted pointer
+// events are accepted; synthetic events are ignored entirely.
 export function handleMouseOver(event: Event): void {
-  const target = event?.target as Element | null;
+  if (!event.isTrusted) return;
+  applyHover(event.target as Element | null);
+}
+
+// The anchoring core, split out from the guarded handler so tests can drive it
+// without a trusted event (jsdom cannot produce one). Never reachable from the
+// page: only handleMouseOver and the exported test surface call it.
+function applyHover(target: Element | null): void {
   if (inChip(target)) {
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     return;
@@ -278,10 +294,18 @@ function reset(): void {
 
 export const __test = {
   handleMouseOver,
+  applyHover,
   showChip,
   hideChip,
   chipVisible,
   isProductUrl,
+  // Simulates a genuine chip activation. The production path requires a trusted
+  // click (covered by the Stage-3 puppeteer integration test); jsdom cannot
+  // forge isTrusted, so the send logic is exercised directly here.
+  activate(type: 'checkout' | 'arm', url: string): void {
+    currentUrl = url;
+    trigger(type === 'checkout' ? 'trigger.checkout' : 'trigger.arm');
+  },
   setSettings(value: Partial<ScoutSettings>): void {
     settings = { hoverChip: value?.hoverChip !== false };
   },

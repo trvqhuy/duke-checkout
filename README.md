@@ -120,6 +120,33 @@ Interrupted post-submission runs recover as unknown after restarting the app.
 Purchase records are retained independently of the recent-preparation history
 limit.
 
+## Trigger threat model
+
+The extension's one-click surfaces are built so a web page cannot spend on the
+user's behalf:
+
+- **One-click spending needs a real user gesture.** The hover chip only appears
+  after a *trusted* `mouseover` from the browser's own pointer, and its buttons
+  only act on *trusted* clicks. Events a page script synthesizes with
+  `dispatchEvent`/`element.click()` are ignored, so a hostile page cannot move
+  the user's intent onto a purchase. The chip's shadow root is `open` (so tests
+  can read its geometry), but `isTrusted` — not the shadow boundary — is the
+  gate.
+- **`confirmBeforePay` forces a review step.** With it on, a trigger never
+  starts a purchase directly; the app opens with the product so the user presses
+  the final button.
+- **The session card is opt-in and ephemeral.** A card is only remembered when
+  the user ticks the remember checkbox, and it lives solely in
+  `chrome.storage.session` — never in profiles, history, or `storage.local` — so
+  it is wiped when the browser session ends.
+- **Auto-arm is rate-limited.** Auto-arm skips while a run is in flight and
+  fires at most once per 5 s across all tabs, bounding retailer API calls.
+
+For a shared or less-trusted machine, the recommended settings are:
+leave the **Remember this card** checkbox unticked (so one-click runs prompt for
+the card each time), enable **Ask before submitting payment**, and disable
+**auto-arm** and the **hover chip**.
+
 ## Local data and configuration
 
 The app listens on `127.0.0.1` and checks local Host/Origin and request tokens.

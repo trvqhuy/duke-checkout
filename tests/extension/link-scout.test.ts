@@ -12,8 +12,17 @@ function makeAnchor(href: string): HTMLAnchorElement {
   return anchor;
 }
 
-function hover(target: Element, relatedTarget?: Element | null): void {
-  target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, composed: true, relatedTarget: relatedTarget ?? null }));
+// A synthetic mouseover is now REJECTED by the chip's isTrusted guard (C1), so
+// tests drive the anchoring core directly. The real trusted-pointer path is
+// covered end to end by tests/extension/integration-stage3.test.ts, where CDP
+// input produces isTrusted events.
+function hover(target: Element, _relatedTarget?: Element | null): void {
+  __test.applyHover(target);
+}
+
+// Dispatches what a hostile page script could dispatch: an untrusted event.
+function syntheticHover(target: Element): void {
+  target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, composed: true }));
 }
 
 function unhover(target: Element, relatedTarget?: Element | null): void {
@@ -221,7 +230,10 @@ describe('dismissal', () => {
 });
 
 describe('triggers', () => {
-  it('sends trigger.checkout once and hides on Checkout now', async () => {
+  // The chip's click handlers require a trusted gesture, so jsdom (which cannot
+  // forge isTrusted) exercises the send logic through __test.activate. The
+  // trusted click itself is asserted by the Stage-3 puppeteer integration test.
+  it('sends trigger.checkout once and hides on a trusted Checkout now', async () => {
     vi.useFakeTimers();
     const sendMessage = vi.fn(() => Promise.resolve());
     vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
@@ -229,14 +241,14 @@ describe('triggers', () => {
     hover(anchor);
     await vi.advanceTimersByTimeAsync(200);
     sendMessage.mockClear();
-    chipButton('.duke-chip-checkout')?.click();
+    __test.activate('checkout', PRODUCT);
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith({ type: 'trigger.checkout', url: PRODUCT });
     expect(__test.chipVisible()).toBe(false);
   });
 
-  it('sends trigger.arm once and hides on Arm', async () => {
+  it('sends trigger.arm once and hides on a trusted Arm', async () => {
     vi.useFakeTimers();
     const sendMessage = vi.fn(() => Promise.resolve());
     vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
@@ -244,7 +256,7 @@ describe('triggers', () => {
     hover(anchor);
     await vi.advanceTimersByTimeAsync(200);
     sendMessage.mockClear();
-    chipButton('.duke-chip-arm')?.click();
+    __test.activate('arm', PRODUCT);
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith({ type: 'trigger.arm', url: PRODUCT });
@@ -274,10 +286,40 @@ describe('triggers', () => {
     const anchor = makeAnchor(PRODUCT);
     hover(anchor);
     await vi.advanceTimersByTimeAsync(200);
+    __test.activate('checkout', PRODUCT);
+    __test.activate('arm', PRODUCT);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('synthetic event rejection (C1)', () => {
+  it('ignores a page-dispatched mouseover so the chip cannot be forced open', async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
+    const anchor = makeAnchor(PRODUCT);
+    syntheticHover(anchor);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(__test.chipVisible()).toBe(false);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('ignores a synthetic click on the chip buttons and leaves the chip up', async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
+    const anchor = makeAnchor(PRODUCT);
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(__test.chipVisible()).toBe(true);
+    sendMessage.mockClear();
+    // Exactly what a page script can do: element.click() produces isTrusted:false.
     chipButton('.duke-chip-checkout')?.click();
     chipButton('.duke-chip-arm')?.click();
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).not.toHaveBeenCalled();
+    expect(__test.chipVisible()).toBe(true);
   });
 });
 

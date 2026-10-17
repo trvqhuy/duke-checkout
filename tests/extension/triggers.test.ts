@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   triggerPlan, shouldAutoArm,
   setLastHovered, getLastHovered, clearLastHovered,
   scheduleAutoArm, AUTO_ARM_DEBOUNCE_MS,
+  claimAutoArmSlot, resetAutoArmSlots, AUTO_ARM_MIN_INTERVAL_MS,
+  configureTriggers, dispatchTrigger,
 } from '../../src/extension/background/triggers.ts';
 import { getSessionCard, putSessionCard, clearSessionCard, DEFAULT_SETTINGS, type DukeSettings } from '../../src/extension/lib/storage.ts';
 import { badgeStateForRun, setBadge } from '../../src/extension/background/badge.ts';
@@ -15,6 +17,7 @@ const local = new Map<string, unknown>();
 const session = new Map<string, unknown>();
 const badgeTexts: string[] = [];
 const badgeColors: string[] = [];
+const createdTabs: Array<Record<string, unknown>> = [];
 
 const items = (map: Map<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter(key => map.has(key)).map(key => [key, map.get(key)]));
 
@@ -34,6 +37,16 @@ const items = (map: Map<string, unknown>, keys: string[]) => Object.fromEntries(
   action: {
     setBadgeText: (details: { text: string }) => { badgeTexts.push(details.text); },
     setBadgeBackgroundColor: (details: { color: string }) => { badgeColors.push(details.color); },
+  },
+  runtime: {
+    getURL: (path: string) => `chrome-extension://test/${path}`,
+    getContexts: async () => [],
+  },
+  tabs: {
+    TAB_ID_NONE: -1,
+    query: async () => [],
+    create: async (options: Record<string, unknown>) => { createdTabs.push(options); return { id: 1 }; },
+    update: async () => ({}),
   },
 };
 
@@ -133,6 +146,61 @@ describe('auto-arm debounce', () => {
     scheduleAutoArm(2, run);
     vi.advanceTimersByTime(AUTO_ARM_DEBOUNCE_MS);
     expect(run).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('auto-arm global interval', () => {
+  afterEach(() => { resetAutoArmSlots(); vi.useRealTimers(); });
+
+  it('allows at most one auto-arm per interval across all tabs', () => {
+    resetAutoArmSlots();
+    const t0 = 1_000_000;
+    expect(claimAutoArmSlot(t0)).toBe(true);
+    expect(claimAutoArmSlot(t0 + AUTO_ARM_MIN_INTERVAL_MS - 1)).toBe(false);
+    expect(claimAutoArmSlot(t0 + AUTO_ARM_MIN_INTERVAL_MS)).toBe(true);
+    expect(claimAutoArmSlot(t0 + AUTO_ARM_MIN_INTERVAL_MS * 2 - 1)).toBe(false);
+  });
+
+  it('defaults to the wall clock', () => {
+    vi.useFakeTimers();
+    resetAutoArmSlots();
+    vi.setSystemTime(5_000_000);
+    expect(claimAutoArmSlot()).toBe(true);
+    expect(claimAutoArmSlot()).toBe(false);
+    vi.setSystemTime(5_000_000 + AUTO_ARM_MIN_INTERVAL_MS);
+    expect(claimAutoArmSlot()).toBe(true);
+  });
+});
+
+describe('dispatchTrigger app routing', () => {
+  const profileRecord = {
+    name: 'Home delivery', firstName: 'Ada', lastName: 'Lovelace', phone: '+61412345678',
+    deliveryAddress: { line1: '1 Example St', line2: '', suburb: 'Sydney', postcode: '2000', state: 'NSW', country: 'AU' },
+    billingSame: true,
+  };
+
+  beforeEach(() => {
+    local.clear();
+    session.clear();
+    createdTabs.length = 0;
+    resetAutoArmSlots();
+    configureTriggers({ adapter: { arm: vi.fn() }, manager: { start: vi.fn() } });
+  });
+
+  it('opens onboarding with the product when a card-mode has no card', async () => {
+    local.set('dukeSettings', settings({ mode: 'purchase', confirmBeforePay: false }));
+    local.set('dukeProfile', profileRecord);
+    await dispatchTrigger('checkout', PRODUCT, 1);
+    const url = String(createdTabs.at(-1)?.url ?? '');
+    expect(url).toContain('onboarding=1');
+    expect(url).toContain(encodeURIComponent(PRODUCT));
+  });
+
+  it('keeps the plain product hand-off when confirm-before-pay is on', async () => {
+    local.set('dukeSettings', settings({ mode: 'purchase', confirmBeforePay: true }));
+    local.set('dukeProfile', profileRecord);
+    await dispatchTrigger('checkout', PRODUCT, 1);
+    expect(String(createdTabs.at(-1)?.url ?? '')).not.toContain('onboarding');
   });
 });
 

@@ -283,7 +283,7 @@ export default function App() {
           <div className="mode-options" role="group" aria-label="Execution mode">{modes.map(item => (
             <button key={item.value} type="button" data-mode={item.value} aria-pressed={settings.mode === item.value} className={settings.mode === item.value ? 'mode-option selected' : 'mode-option'} onClick={() => { update({ mode: item.value }); if (!modeNeedsCard(item.value)) setCard(emptyCard()); }}><span className="mode-indicator" /><div><strong>{item.label}</strong><span>{item.blurb}</span></div></button>
           ))}</div>
-          <label className="check-row"><input type="checkbox" checked={settings.hoverChip} onChange={event => update({ hoverChip: event.target.checked })} /><span>Show the Duke hover chip on BIG W product pages</span></label>
+          <label className="check-row"><input type="checkbox" checked={settings.hoverChip} onChange={event => update({ hoverChip: event.target.checked })} /><span>Show a checkout chip when you hover a BIG W product link on any site</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.autoArm} onChange={event => update({ autoArm: event.target.checked })} /><span>Arm the checkout automatically after an inspection</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.confirmBeforePay} onChange={event => update({ confirmBeforePay: event.target.checked })} /><span>Ask before submitting payment</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.cardClearAfterOrder} onChange={event => update({ cardClearAfterOrder: event.target.checked })} /><span>Clear card details after every order</span></label>
