@@ -1,6 +1,6 @@
 import { decodeRequest, encodeResponse, isEvent, type DukeRequest } from '../lib/protocol.ts';
 import { getSettings, putSettings, getProfile, putProfile, getHistory, getSessionCard, putSessionCard, clearSessionCard, DEFAULT_SETTINGS, type SessionCard } from '../lib/storage.ts';
-import { acquireWorkTab, ensureBridge } from './work-tab.ts';
+import { acquireWorkTab, ensureBridge, waitForBridgeReady } from './work-tab.ts';
 import { getArmed, setArmed, clearArmed } from './state.ts';
 import { registerKeeper } from './keeper.ts';
 import { BigWExtensionAdapter } from '../lib/retailers/bigw/adapter.ts';
