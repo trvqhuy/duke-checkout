@@ -85,13 +85,26 @@ export function driverHandleFor(initialTabId: number, timeoutMs = DEFAULT_TIMEOU
     async observeClear() { await control({ kind: 'observe.clear' }); },
     async guardEnable(binding) { await control({ kind: 'guard.enable', binding }); },
     async guardDisable() { await control({ kind: 'guard.disable' }); },
-    async openCheckoutTab(url) {
+    async openCheckoutTab(url, opts) {
+      // The trigger opens the run's presentation tab (progress.html) up front.
+      // Reuse it so the tab the user is already watching becomes the checkout,
+      // instead of opening a second tab and leaving the progress page behind.
+      if (typeof opts?.tabId === 'number') {
+        try {
+          tabId = opts.tabId;
+          await chrome.tabs.update(tabId, { url, active: true });
+          return tabId;
+        } catch { /* the user closed the progress tab; fall through to a new one */ }
+      }
+      // No presentation tab (app-page runs, or the tab could not be opened):
+      // open a fresh active tab and adopt it for the rest of the run.
       const tab = await chrome.tabs.create({ url, active: true });
       if (typeof tab.id !== 'number') throw driverTimeout('new tab');
       tabId = tab.id;
       // Wait until the checkout page's bridge answers so the first driver
       // message is not lost while the page boots.
       await new Promise(resolve => setTimeout(resolve, 300));
+      return tabId;
     },
     async guardEvents() { return guardEventProvider?.(tabId) ?? []; },
     async antiFraud() { return await control({ kind: 'observe.antiFraud' }) as { fingerprint: string }; },

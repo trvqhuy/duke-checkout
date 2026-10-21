@@ -11,7 +11,7 @@ import { rm } from 'node:fs/promises';
 import type { Browser, Page } from 'puppeteer-core';
 import {
   RetailerFixture, assertExtensionBuilt, CART_ID, PRODUCT_CODE, extensionDir,
-  launchExtensionBrowser, makeTemporaryDir, profile, productUrl, readSecureFieldValues, testCard, waitForBridgePing,
+  launchExtensionBrowser, makeTemporaryDir, interceptNewTabs, profile, productUrl, readSecureFieldValues, testCard, waitForBridgePing,
 } from './fixture-retailer.ts';
 
 let temporary: string;
@@ -39,7 +39,19 @@ async function waitForRunStatus(status: string, differentFrom: string | null, ti
     },
     { timeout, polling: 250 },
     { status, differentFrom },
-  );
+  ).catch(async (error: unknown) => {
+    const runs = await sendToBackground<Array<{ status: string; stage: string; error?: { code?: string; message?: string }; events?: Array<{ stage: string; message: string }> }>>('run.list').catch(() => []);
+    const latest = runs[0];
+    const trace = (latest?.events ?? []).map(event => `${event.stage}: ${event.message}`).join(' | ');
+    const pages = (await browser.pages()).map(page => page.url()).filter(url => !url.startsWith('chrome-extension://'));
+    const checkoutTab = (await browser.pages()).filter(page => page.url().includes('/checkout/')).at(-1);
+    const checkoutText = checkoutTab ? await checkoutTab.evaluate(() => ({
+      title: document.title,
+      text: (document.body?.innerText || '').slice(0, 220),
+      iframes: Array.from(document.querySelectorAll('iframe')).map(f => f.src).slice(0, 4),
+    })).catch(() => null) : null;
+    throw new Error(`run never reached ${status}. latest=${JSON.stringify({ status: latest?.status, stage: latest?.stage, error: latest?.error })} events=[${trace}] pages=${JSON.stringify(pages)} checkout=${JSON.stringify(checkoutText)} :: ${String(error).slice(0, 120)}`);
+  });
 }
 
 async function clickStartAndWait(status: string, timeout = 90_000): Promise<string | null> {
@@ -106,6 +118,7 @@ beforeAll(async () => {
   workPage = await browser.newPage();
   await workPage.setRequestInterception(true);
   workPage.on('request', request => fixture.intercept(request).catch(async () => { if (!request.isInterceptResolutionHandled()) return request.abort('failed', 100); }));
+  await interceptNewTabs(browser, fixture);
   workPage.on('pageerror', error => fixture.runtimeErrors.push(`work pageerror: ${String(error)}`));
   await workPage.goto('https://www.bigw.com.au/', { waitUntil: 'load' });
   appPage = await browser.newPage();
@@ -128,6 +141,11 @@ beforeEach(async () => {
   // Drop any armed checkout so every run takes the full prepare path, and clear
   // the one-run card fields the app may have kept from a prior scenario.
   await sendToBackground('arm.clear');
+  // Each run opens its own checkout tab; close the previous scenario's so the
+  // assertions below cannot read a stale page.
+  for (const page of await browser.pages()) {
+    if (page.url().includes('/checkout/')) await page.close().catch(() => undefined);
+  }
   await appPage.locator('#field-card-number').fill('');
   await appPage.locator('#field-card-expiry').fill('');
   await appPage.locator('#field-card-cvv').fill('');
@@ -159,15 +177,30 @@ describe('extension stage-2 integration', () => {
     const run = runs.find(item => item.id === runId)!;
     expect(run).toMatchObject({ status: 'succeeded', orderNumber: 'ORD-1' });
 
-    // Card material must NEVER reach durable storage.local (it holds settings,
-    // profile, and history). storage.session MAY hold `dukeCard` by design: the
-    // remember-default-on one-click flow keeps the card for the browser session,
-    // cleared on browser close or after a terminal run when cardClearAfterOrder
-    // is set. So only the durable store is asserted to be free of card material.
+    // Card material must NEVER reach durable storage.local in plaintext. The
+    // optional device vault is the one deliberate exception: it holds an
+    // AES-GCM envelope (iv + ciphertext), never the PAN or CVV. storage.session
+    // MAY hold `dukeCard` by design: the one-click flow keeps the card for the
+    // browser session, cleared on browser close or after a terminal run when
+    // cardClearAfterOrder is set.
     const dump = await storageDump();
-    for (const secret of CARD_PATHS) expect(dump.local).not.toContain(secret);
-    expect(dump.local).not.toContain('"cvv"');
-    expect(dump.local.toLowerCase()).not.toContain('securitycode');
+    const durable = JSON.parse(dump.local) as Record<string, unknown>;
+    const vault = durable.dukeCardVault as Record<string, unknown> | undefined;
+    delete durable.dukeCardVault;
+    const plain = JSON.stringify(durable);
+    expect(plain).not.toContain(testCard.number);
+    for (const secret of CARD_PATHS) expect(plain).not.toContain(`"${secret}"`);
+    expect(plain).not.toContain('"cvv"');
+    expect(plain).not.toContain('"securityCode"');
+    expect(plain.toLowerCase()).not.toContain('securitycode');
+    if (vault) {
+      // The envelope is opaque: no card value survives in it.
+      expect(JSON.stringify(vault)).not.toContain(testCard.number);
+      expect(JSON.stringify(vault)).not.toContain(testCard.cvv);
+      expect(vault).toMatchObject({ v: 1 });
+      expect(typeof vault.iv).toBe('string');
+      expect(typeof vault.data).toBe('string');
+    }
 
     expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
   }, 120_000);
@@ -193,7 +226,10 @@ describe('extension stage-2 integration', () => {
     await prepareForm('assist');
     await clickStartAndWait('ready');
 
-    const values = await readSecureFieldValues(workPage);
+    // The run reveals the checkout in its own tab (not the background work tab).
+    const checkout = (await browser.pages()).filter(page => page.url().includes('/checkout/')).at(-1);
+    expect(checkout, 'checkout tab was not opened').toBeTruthy();
+    const values = await readSecureFieldValues(checkout!);
     expect(values).toEqual({ number: testCard.number, expiryDate: testCard.expiry, securityCode: testCard.cvv });
     expect(fixture.payPosts).toBe(0);
     expect(fixture.requestedPaths.some(path => path.endsWith('/pay'))).toBe(false);

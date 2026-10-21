@@ -3,6 +3,7 @@ import { BigWExtensionAdapter } from '../../src/extension/lib/retailers/bigw/ada
 import type { RunAdapter } from '../../src/extension/background/run-manager.ts';
 import type { ArmedCheckout } from '../../src/shared/types.ts';
 import { productUrl, profile } from '../fixtures.ts';
+import { validateProfile } from '../../src/shared/validation.ts';
 
 const stubSender = (responses: Record<string, unknown>, called: string[] = []) => ({
   sendMessage: async (_tabId: number, msg: unknown) => {
@@ -74,6 +75,99 @@ describe('BigWExtensionAdapter', () => {
       '/storefront/v1/cart/CT_abc/recalculate',
     ]);
   });
+  it('reuses the account cart, replaces its other items, and skips matching details', async () => {
+    const called: string[] = [];
+    const validProfile = validateProfile(profile);
+    let entries = [{ productCode: '999999', quantity: 2 }];
+    const accountAddress = {
+      ...profile.deliveryAddress,
+      firstName: profile.firstName, lastName: profile.lastName,
+      phonenumber: '+61412345678',
+    };
+    const cart = () => ({
+      id: 'CT_live', version: 7, total: 2200, deliveryCost: 400,
+      entries: [...entries],
+      deliveryAddress: { ...accountAddress },
+      billingAddress: { ...accountAddress },
+      customer: { firstName: profile.firstName, lastName: profile.lastName, phone: '+61412345678', phonenumber: '+61412345678' },
+      validation: { isValid: true },
+    });
+    const sender = {
+      sendMessage: async (_tabId: number, msg: unknown) => {
+        const message = msg as { type?: string; args?: { path: string; body?: Record<string, unknown> } };
+        if (message.type === 'bridge.context') return { storeId: 'S1', cartId: 'CT_live', delivery: null };
+        const raw = message.args?.path ?? '';
+        const path = raw.split('?')[0];
+        called.push(path);
+        if (path === '/storefront/v1/cart/CT_live') return { ok: true, status: 200, data: cart() };
+        if (path.endsWith('/update')) {
+          const body = message.args?.body ?? {};
+          entries = entries.filter(entry => entry.productCode !== body.productCode);
+          if (Number(body.quantity) > 0) entries.push({ productCode: String(body.productCode), quantity: Number(body.quantity) });
+          return { ok: true, status: 200, data: cart() };
+        }
+        if (path.endsWith('/add')) {
+          const body = message.args?.body ?? {};
+          entries = entries.filter(entry => entry.productCode !== body.productCode);
+          entries.push({ productCode: String(body.productCode), quantity: Number(body.quantity) || 1 });
+          return { ok: true, status: 200, data: cart() };
+        }
+        if (path === '/warehouse-customer/v1/postcode/2000') return { ok: true, status: 200, data: [{ state: 'NSW', miraklZone: 'ZONE_1', zoneClassification: 'MIXED' }] };
+        if (path === '/api/stores/v0/list') return { ok: true, status: 200, data: { S1: { id: 'S1', name: 'Sydney Store', address: { state: 'NSW' } } } };
+        if (path === '/apim/product-price-api/v1/products') return { ok: true, status: 200, data: [{ code: '6071620', name: 'Example Book' }] };
+        if (path === '/apim/product-price-api/v1/prices/6071620') return { ok: true, status: 200, data: [{ price: { centAmount: 1800, fractionDigits: 2 } }] };
+        if (path === '/api/availability/v0/product/6071620') return { ok: true, status: 200, data: { products: { '6071620': { minDeliveryFee: 400, delivery: { 'Standard Delivery': { available: true, quantity: 5 } } } } } };
+        throw new Error(`unexpected path ${path}`);
+      },
+    };
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender }));
+    const armed = await adapter.arm({ productUrl, quantity: 1, maxTotalCents: 2500, mode: 'purchase', profile: validProfile, replaceCart: true }, () => undefined, new AbortController().signal);
+    expect(armed.level).toBe('cart-ready');
+    expect(armed.cart.entries).toEqual([{ productCode: '6071620', quantity: 1 }]);
+    // The existing cart is read, the other item is removed with quantity 0, the
+    // product is added, and the cart is read again. No /create, and no detail
+    // mutations (the account cart already matches the profile).
+    expect(called).toEqual([
+      '/warehouse-customer/v1/postcode/2000',
+      '/apim/product-price-api/v1/products',
+      '/apim/product-price-api/v1/prices/6071620',
+      '/api/availability/v0/product/6071620',
+      '/storefront/v1/cart/CT_live',
+      '/storefront/v1/cart/CT_live/update',
+      '/storefront/v1/cart/CT_live/add',
+      '/storefront/v1/cart/CT_live',
+    ]);
+  });
+
+  it('refuses to replace a non-empty account cart when replaceCart is off', async () => {
+    const called: string[] = [];
+    const cart = {
+      id: 'CT_live', version: 1, total: 100, deliveryCost: 0,
+      entries: [{ productCode: '999999', quantity: 1 }],
+      deliveryAddress: { ...profile.deliveryAddress }, billingAddress: { ...profile.deliveryAddress }, customer: null,
+      validation: { isValid: true },
+    };
+    const sender = {
+      sendMessage: async (_tabId: number, msg: unknown) => {
+        const message = msg as { type?: string; args?: { path: string } };
+        if (message.type === 'bridge.context') return { storeId: 'S1', cartId: 'CT_live', delivery: null };
+        const path = (message.args?.path ?? '').split('?')[0];
+        called.push(path);
+        if (path === '/storefront/v1/cart/CT_live') return { ok: true, status: 200, data: cart };
+        if (path === '/warehouse-customer/v1/postcode/2000') return { ok: true, status: 200, data: [{ state: 'NSW', miraklZone: 'ZONE_1', zoneClassification: 'MIXED' }] };
+        if (path === '/api/stores/v0/list') return { ok: true, status: 200, data: { S1: { id: 'S1', name: 'Sydney Store', address: { state: 'NSW' } } } };
+        if (path === '/apim/product-price-api/v1/products') return { ok: true, status: 200, data: [{ code: '6071620', name: 'Example Book' }] };
+        if (path === '/apim/product-price-api/v1/prices/6071620') return { ok: true, status: 200, data: [{ price: { centAmount: 1800, fractionDigits: 2 } }] };
+        if (path === '/api/availability/v0/product/6071620') return { ok: true, status: 200, data: { products: { '6071620': { minDeliveryFee: 400, delivery: { 'Standard Delivery': { available: true, quantity: 5 } } } } } };
+        throw new Error(`unexpected path ${path}`);
+      },
+    };
+    const adapter = new BigWExtensionAdapter(async () => ({ tabId: 5, sender }));
+    await expect(adapter.arm({ productUrl, quantity: 1, maxTotalCents: 2500, mode: 'purchase', profile: validateProfile(profile), replaceCart: false }, () => undefined, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'CART_NOT_EMPTY' });
+    expect(called.some(path => path.endsWith('/update') || path.endsWith('/add'))).toBe(false);
+  });
+
   it('arm() publishes a cart-ready checkout to the injected store', async () => {
     const written: Array<ArmedCheckout | null> = [];
     const store = { get: () => null as ArmedCheckout | null, set: (armed: ArmedCheckout | null) => { written.push(armed); } };

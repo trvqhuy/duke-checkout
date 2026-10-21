@@ -4,7 +4,7 @@ import {
   setLastHovered, getLastHovered, clearLastHovered,
   scheduleAutoArm, AUTO_ARM_DEBOUNCE_MS,
   claimAutoArmSlot, resetAutoArmSlots, AUTO_ARM_MIN_INTERVAL_MS,
-  configureTriggers, dispatchTrigger,
+  configureTriggers, dispatchTrigger, clampQuantity,
 } from '../../src/extension/background/triggers.ts';
 import { getSessionCard, putSessionCard, clearSessionCard, DEFAULT_SETTINGS, type DukeSettings } from '../../src/extension/lib/storage.ts';
 import { badgeStateForRun, setBadge } from '../../src/extension/background/badge.ts';
@@ -187,20 +187,56 @@ describe('dispatchTrigger app routing', () => {
     configureTriggers({ adapter: { arm: vi.fn() }, manager: { start: vi.fn() } });
   });
 
-  it('opens onboarding with the product when a card-mode has no card', async () => {
+  it('never opens the app page when a card-mode has no card (notifies instead)', async () => {
     local.set('dukeSettings', settings({ mode: 'purchase', confirmBeforePay: false }));
     local.set('dukeProfile', profileRecord);
-    await dispatchTrigger('checkout', PRODUCT, 1);
-    const url = String(createdTabs.at(-1)?.url ?? '');
-    expect(url).toContain('onboarding=1');
-    expect(url).toContain(encodeURIComponent(PRODUCT));
+    const result = await dispatchTrigger('checkout', PRODUCT, 1);
+    expect(result).toMatchObject({ ok: false, code: 'CARD_REQUIRED' });
+    expect(createdTabs).toEqual([]);
   });
 
-  it('keeps the plain product hand-off when confirm-before-pay is on', async () => {
+  it('passes the chip quantity and its presentation tab into the run', async () => {
+    local.set('dukeSettings', settings({ mode: 'purchase', confirmBeforePay: false }));
+    local.set('dukeProfile', profileRecord);
+    session.set('dukeCard', { number: '4111111111111111', expiry: '12/37', cvv: '123' });
+    const start = vi.fn(async (_payload: Record<string, unknown>) => ({ id: 'run-1' }));
+    const setPresentationTab = vi.fn();
+    const openProgress = vi.fn(async () => 77);
+    let saved: DukeSettings | null = null;
+    configureTriggers({
+      adapter: { arm: vi.fn(), setPresentationTab },
+      manager: { start },
+      openProgress,
+      notifySettings: next => { saved = next; },
+    });
+    const result = await dispatchTrigger('checkout', PRODUCT, 1, { quantity: 3 });
+    expect(result).toMatchObject({ ok: true, runId: 'run-1' });
+    expect(openProgress).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ quantity: 3, productUrl: PRODUCT }));
+    const payload = start.mock.calls[0][0] as { requestId: string };
+    expect(setPresentationTab).toHaveBeenCalledWith(77, payload.requestId);
+    await vi.waitFor(() => expect(saved).toMatchObject({ quantity: 3 }));
+  });
+
+  it('clamps chip quantities to the settings range', () => {
+    expect(clampQuantity(-5)).toBe(1);
+    expect(clampQuantity(0)).toBe(1);
+    expect(clampQuantity(3)).toBe(3);
+    expect(clampQuantity(99)).toBe(20);
+    expect(clampQuantity('4')).toBe(4);
+    expect(clampQuantity('nope', 7)).toBe(7);
+    expect(clampQuantity(undefined, 2)).toBe(2);
+  });
+
+  it('runs confirm-before-pay as a fill-only review in the checkout tab (no app page)', async () => {
     local.set('dukeSettings', settings({ mode: 'purchase', confirmBeforePay: true }));
     local.set('dukeProfile', profileRecord);
+    session.set('dukeCard', { number: '4111111111111111', expiry: '12/37', cvv: '123' });
+    const start = vi.fn();
+    configureTriggers({ adapter: { arm: vi.fn() }, manager: { start } });
     await dispatchTrigger('checkout', PRODUCT, 1);
-    expect(String(createdTabs.at(-1)?.url ?? '')).not.toContain('onboarding');
+    expect(createdTabs).toEqual([]);
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ mode: 'assist', productUrl: PRODUCT }));
   });
 });
 

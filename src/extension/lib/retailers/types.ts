@@ -20,7 +20,11 @@ export interface DriverHandle {
   sendTop(message: unknown): Promise<unknown>;
   sendFrame(frameId: number, message: unknown): Promise<unknown>;
   navigate(url: string): Promise<void>;
-  openCheckoutTab(url: string): Promise<void>;
+  // Navigates the run's presentation tab (the progress page opened by the
+  // trigger) when one is supplied, otherwise opens a new active tab. Returns
+  // the tab the handle now drives, so later steps stay on this run's checkout
+  // instead of re-picking whichever BIG W tab happens to be first.
+  openCheckoutTab(url: string, opts?: { tabId?: number }): Promise<number>;
   activate(): Promise<void>;
   url(): Promise<string>;
   observe(): Promise<{ entries: ObservedEntry[] }>;

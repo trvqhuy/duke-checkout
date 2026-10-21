@@ -89,7 +89,12 @@ export function pageContext(): {
   try { cartId = JSON.parse(localStorage.getItem('bigw:state-cartId') ?? 'null'); } catch { /* fall through with the default */ }
   const cookie = (name: string): unknown => {
     const value = (document.cookie || '').split('; ').find(part => part.startsWith(`${name}=`));
-    try { return value ? JSON.parse(decodeURIComponent(value.slice(name.length + 1))) : null; } catch { return null; }
+    if (!value) return null;
+    const raw = decodeURIComponent(value.slice(name.length + 1));
+    // Store/location cookies are usually JSON, but a plain store id is valid
+    // too (and some builds write one). A value that looks like JSON but does
+    // not parse is corrupt, so discard it instead of using half an object.
+    try { return JSON.parse(raw); } catch { return /^[{\[]/.test(raw.trim()) ? null : raw; }
   };
   return {
     authenticated: !!cached?.token,

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Duke · preparing checkout</title>
+<style>
+  :root {
+    --bg: #f4f2ec; --card: #fffefb; --ink: #20261f; --ink-2: #3f4739;
+    --muted: #6e7566; --faint: #9aa08f; --line: #e7e5d9; --line-strong: #d6d3c3;
+    --surface-2: #faf9f3; --sage: #e9efe1; --sage-line: #cfdcc3; --sage-ink: #3c5a34;
+    --gold: #f2c94c; --gold-ink: #211d0e; --pine: #232b20;
+    --rose: #f8e8e3; --rose-line: #eccfc7; --rose-ink: #96412f;
+    --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+    --shadow: 0 2px 4px rgba(32,38,31,.04), 0 14px 32px rgba(32,38,31,.08);
+    --ease: cubic-bezier(.22,.7,.3,1);
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 34px 26px;
+    background:
+      radial-gradient(1200px 500px at 50% -220px, #fdfcf6 0%, var(--bg) 70%);
+    color: var(--ink);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .card {
+    width: min(620px, 100%); background: var(--card);
+    border: 1px solid var(--line); border-radius: 20px; padding: 30px 34px 28px;
+    box-shadow: var(--shadow);
+  }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+  .eyebrow { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--faint); font-weight: 750; }
+  .mark { width: 34px; height: 37px; border-radius: 10px; background: var(--pine); color: #f8f6ee; display: grid; place-items: center; font: italic 30px/1 Georgia, serif; padding-bottom: 5px; }
+  h1 { font-size: 30px; line-height: 1.14; margin: 0 0 7px; letter-spacing: -.015em; font-weight: 680; }
+  .sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+  .summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  .pill {
+    border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--r-pill);
+    padding: 5px 12px; font-size: 12px; color: var(--ink-2); font-weight: 560;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pill strong { color: var(--ink); }
+  ol { list-style: none; margin: 0 0 18px; padding: 0; }
+  li { display: flex; align-items: center; gap: 12px; padding: 10px 0; color: var(--faint); border-bottom: 1px solid var(--surface-3, #f1efe6); font-size: 14px; }
+  li:last-child { border-bottom: 0; }
+  li .dot {
+    width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-strong);
+    display: grid; place-items: center; font-size: 10px; font-weight: 700; flex: none; color: var(--faint);
+    background: #fff; transition: background .2s var(--ease), border-color .2s var(--ease);
+  }
+  li.done { color: var(--ink-2); }
+  li.done .dot { background: var(--sage); border-color: var(--sage-line); color: var(--sage-ink); }
+  li.current { color: var(--ink); font-weight: 620; }
+  li.current .dot { border-color: #d3a72e; color: #8a6520; background: #fdf3d3; }
+  li.stopped .dot { border-color: var(--rose-line); background: var(--rose); color: var(--rose-ink); }
+  .pulse { width: 6px; height: 6px; border-radius: 50%; background: #d3a72e; margin-left: auto; animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.25); } }
+  .message {
+    background: var(--surface-2); border-left: 3px solid #d3a72e; border-radius: 10px;
+    padding: 12px 14px; font-size: 13px; color: var(--ink-2); min-height: 44px;
+  }
+  .message.error { border-left-color: #b3402f; background: var(--rose); color: var(--rose-ink); }
+  .message.success { border-left-color: #4d7c43; background: var(--sage); color: var(--sage-ink); }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+  button, a.button {
+    appearance: none; border-radius: var(--r-md); padding: 11px 19px; font: inherit; font-size: 13.5px; font-weight: 620;
+    cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
+    transition: background .18s var(--ease), border-color .18s var(--ease), transform .18s var(--ease);
+  }
+  .primary { background: var(--pine); color: #f8f6ee; border: 1px solid var(--pine); box-shadow: 0 1px 2px rgba(32,38,31,.12); }
+  .primary:hover { background: #2e3829; }
+  .secondary { background: #fff; color: var(--ink); border: 1px solid var(--line-strong); }
+  .secondary:hover { border-color: #b9b5a2; background: var(--surface-2); }
+  button:active { transform: scale(.985); }
+  .foot { margin-top: 18px; display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 11.5px; }
+  .lock { width: 11px; height: 11px; border: 1.5px solid currentColor; border-radius: 3px; position: relative; flex: none; }
+  .lock::before { content: ""; position: absolute; left: 2px; top: -5px; width: 5px; height: 5px; border: 1.5px solid currentColor; border-bottom: 0; border-radius: 4px 4px 0 0; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+  <main class="card" aria-live="polite">
+    <div class="top"><span class="eyebrow">Duke checkout</span><span class="mark">d</span></div>
+    <h1 id="title">Preparing your order</h1>
+    <p class="sub" id="sub">A new tab will become the BIG W checkout as soon as it is ready.</p>
+    <div class="summary" id="summary"></div>
+    <ol id="stages"></ol>
+    <div class="message" id="message" role="status">Starting…</div>
+    <div class="actions" id="actions"></div>
+    <p class="foot"><span class="lock" aria-hidden="true"></span> Runs locally in your Chrome. Card details never leave the secure fields.</p>
+  </main>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

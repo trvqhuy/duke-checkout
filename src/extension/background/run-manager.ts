@@ -39,6 +39,10 @@ import { getHistory, saveRuns } from '../lib/storage.ts';
 // Exactly the adapter surface this manager uses, so tests can pass a fake.
 export interface RunAdapter {
   connect?(): Promise<unknown>;
+  // Binds the adapter to this run's requestId (used by the presentation tab).
+  beginRun?(requestId: string): void;
+  // Releases the run-scoped tab pin when the run finishes.
+  endRun?(): void;
   inspect(productUrl: string, profile: Profile): Promise<ProductInfo>;
   prepare(input: RunRequest, product: ProductInfo, report: StageReporter, signal: AbortSignal): Promise<PreparedCheckout>;
   verify(prepared: PreparedCheckout, input: RunRequest): Promise<CartState>;
@@ -186,6 +190,7 @@ export class RunManager {
     let card: PaymentInput | undefined = input.card;
     try {
       run.status = 'running';
+      this.adapter.beginRun?.(run.requestId);
       this.report(run, 'connect', 'Checking your existing Chrome session.');
       await this.adapter.connect?.(); checkAbort(signal);
       // Fast paths: a cart-ready armed checkout skips inspection and every cart
@@ -301,6 +306,7 @@ export class RunManager {
       // Fill-only mode intentionally leaves the card in the retailer's fields so
       // the user can submit it themselves.
       if (!keepFilledCard) await this.adapter.clearSensitiveFields().catch(() => undefined);
+      this.adapter.endRun?.();
       run.finishedAt = new Date().toISOString();
       this.active = undefined;
       this.publish(run);

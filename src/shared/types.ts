@@ -35,6 +35,9 @@ export interface RunRequest {
   mode: RunMode;
   profile: Profile;
   card?: PaymentInput;
+  // If the account's cart already has other items, replace them with this
+  // checkout's item instead of failing. Defaults to true when omitted.
+  replaceCart?: boolean;
 }
 
 export interface ProductInfo {

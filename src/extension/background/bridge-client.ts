@@ -4,7 +4,7 @@ type Sender = { sendMessage: (tabId: number, msg: unknown) => Promise<unknown> }
 const MESSAGES: Record<string, string> = {
   LOGIN_REQUIRED: 'BIG W needs you to sign in again in the BIG W tab.',
   SESSION_EXPIRED: 'The BIG W session expired. Open BIG W and prepare again.',
-  BROWSER_ATTENTION: 'BIG W needs attention in Chrome. Complete any sign-in or browser check there, then prepare again.',
+  BROWSER_ATTENTION: 'BIG W blocked this request (HTTP 403). Open bigw.com.au in this Chrome window and make sure the site itself works there (sign in or complete its browser check); if you use a VPN, turn it off and try again.',
   REQUEST_TIMEOUT: 'BIG W took too long to respond to this preparation step.',
   REQUEST_NETWORK: 'The browser could not reach BIG W. Check its connection and try again.',
 };

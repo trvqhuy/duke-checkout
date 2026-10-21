@@ -182,7 +182,7 @@ export class RetailerFixture {
     else if (path.includes('/product-price-api/v1/prices/')) body = [{ price: { centAmount: 1800 }, label: 'PRE-ORDER' }];
     else if (path.startsWith('/warehouse-customer/')) body = [{ state: 'NSW', miraklZone: 'ZONE_1', zoneClassification: 'METRO' }];
     else if (path.startsWith('/api/availability/')) body = availability;
-    else if (path === '/api/stores/v0/list') body = [{ id: 'S1', name: 'Sydney Store', address: { state: 'NSW' } }];
+    else if (path === '/api/stores/v0/list') body = { S1: { id: 'S1', name: 'Sydney Store', address: { suburb: 'Sydney', state: 'NSW', postcode: '2000' } }, S2: { id: 'S2', name: 'Melbourne Store', address: { state: 'VIC', postcode: '3000' } } };
     // Profile import (Stage-3 onboarding): the account name/phone and the
     // primary delivery address the adapter normalises into a stored profile.
     else if (path === '/profile/v1/addresses') body = [{ primary: true, ...address }];
@@ -208,6 +208,75 @@ export class RetailerFixture {
     }
     await request.respond({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(body) }, 0);
   }
+}
+
+// The adapter reveals the prepared checkout in a NEW tab, so interception must
+// follow new pages too (otherwise the checkout loads from the real network).
+export async function interceptNewTabs(browser: Browser, fixture: RetailerFixture): Promise<void> {
+  browser.on('targetcreated', async target => {
+    if (target.type() !== 'page') return;
+    try {
+      const page = await target.page();
+      if (!page) return;
+      // Interception is attached to every page, including the run's
+      // progress.html tab: the adapter later navigates that same tab to the
+      // checkout, and the request handler below continues every non-fixture
+      // origin untouched.
+      await page.setRequestInterception(true);
+      page.on('request', request => {
+        // Only the retailer/payment origins belong to the fixture. A page can be
+        // a real foreign page (the hover-chip scenario) or any other tab the
+        // user/test opened; those requests must pass through untouched.
+        const url = request.url();
+        if (!/^https?:/i.test(url)) { void request.continue().catch(() => undefined); return; }
+        const host = new URL(url).hostname;
+        if (host !== 'www.bigw.com.au' && host !== 'api.bigw.com.au' && host !== 'apix.bigw.com.au' && host !== 'secure-fields.wpay2.gr4vy.app') {
+          void request.continue().catch(() => undefined);
+          return;
+        }
+        void fixture.intercept(request).catch(async () => { if (!request.isInterceptResolutionHandled()) return request.abort('failed', 100); });
+      });
+      // Chrome does not route a tab's first navigation through CDP Fetch
+      // interception when the tab was created by an extension
+      // (chrome.tabs.create). The run only needs the checkout document to be the
+      // fixture, so if the tab did not land on it, load it here through Puppeteer
+      // (whose navigation IS intercepted). Keep this quick: the run waits on the
+      // driver's ready() for up to 60 s, so a slow recovery looks like a hang.
+      const started = Date.now();
+      const timer = setInterval(() => {
+        void (async () => {
+          try {
+            const url = page.url();
+            if (url.startsWith('chrome-extension://') || url === 'about:blank') {
+              if (Date.now() - started > 15_000) clearInterval(timer);
+              return;
+            }
+            if (url.startsWith('chrome-error')) {
+              clearInterval(timer);
+              await page.goto('https://www.bigw.com.au/checkout/delivery', { waitUntil: 'load' }).catch(() => undefined);
+              return;
+            }
+            if (!url.startsWith('http')) { clearInterval(timer); return; }
+            if (url.includes('/checkout/')) {
+              const loaded = await page.evaluate(() => document.title === 'BIG W checkout fixture').catch(() => false);
+              if (loaded) { clearInterval(timer); return; }
+              // The real page (or a still-loading one) won the first navigation.
+              // Let it settle, then reload it through intercepted Puppeteer.
+              const ready = await page.evaluate(() => document.readyState === 'complete').catch(() => true);
+              if (ready) {
+                clearInterval(timer);
+                await page.goto('https://www.bigw.com.au/checkout/delivery', { waitUntil: 'load' }).catch(() => undefined);
+              }
+              return;
+            }
+            // A non-checkout http page (e.g. the foreign hover page): leave it.
+            clearInterval(timer);
+          } catch { clearInterval(timer); }
+        })();
+      }, 300);
+      setTimeout(() => clearInterval(timer), 20_000);
+    } catch { /* the target may have closed */ }
+  });
 }
 
 export const isServiceWorker = (target: Target): boolean => target.type() === 'service_worker';

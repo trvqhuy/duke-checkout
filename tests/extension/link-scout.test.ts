@@ -233,24 +233,26 @@ describe('triggers', () => {
   // The chip's click handlers require a trusted gesture, so jsdom (which cannot
   // forge isTrusted) exercises the send logic through __test.activate. The
   // trusted click itself is asserted by the Stage-3 puppeteer integration test.
-  it('sends trigger.checkout once and hides on a trusted Checkout now', async () => {
+  it('sends trigger.checkout with the chosen quantity and steps aside', async () => {
     vi.useFakeTimers();
-    const sendMessage = vi.fn(() => Promise.resolve());
+    const sendMessage = vi.fn(() => Promise.resolve({ ok: true }));
     vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
     const anchor = makeAnchor(PRODUCT);
+    __test.setSettings({ quantity: 4 });
     hover(anchor);
     await vi.advanceTimersByTimeAsync(200);
     sendMessage.mockClear();
     __test.activate('checkout', PRODUCT);
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith({ type: 'trigger.checkout', url: PRODUCT });
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'trigger.checkout', url: PRODUCT, quantity: 4 });
+    await vi.advanceTimersByTimeAsync(1000);
     expect(__test.chipVisible()).toBe(false);
   });
 
-  it('sends trigger.arm once and hides on a trusted Arm', async () => {
+  it('sends trigger.arm once, confirms, then hides', async () => {
     vi.useFakeTimers();
-    const sendMessage = vi.fn(() => Promise.resolve());
+    const sendMessage = vi.fn(() => Promise.resolve({ ok: true }));
     vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
     const anchor = makeAnchor(PRODUCT);
     hover(anchor);
@@ -260,7 +262,24 @@ describe('triggers', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith({ type: 'trigger.arm', url: PRODUCT });
+    expect(__test.getShadowRoot()?.textContent).toContain('Armed');
+    await vi.advanceTimersByTimeAsync(1900);
     expect(__test.chipVisible()).toBe(false);
+  });
+
+  it('keeps the card up and offers the fix when a trigger is rejected', async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn(() => Promise.resolve({ ok: false, code: 'CARD_REQUIRED', message: 'Add a card in Duke before checking out.' }));
+    vi.stubGlobal('chrome', { runtime: { id: 'test-extension', sendMessage } });
+    const anchor = makeAnchor(PRODUCT);
+    hover(anchor);
+    await vi.advanceTimersByTimeAsync(200);
+    __test.activate('checkout', PRODUCT);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(__test.chipVisible()).toBe(true);
+    expect(__test.getPhase()).toBe('error');
+    expect(__test.getShadowRoot()?.textContent).toContain('Add a card in Duke before checking out.');
+    expect(chipButton('.duke-chip-actions .primary')?.textContent).toContain('Open Duke setup');
   });
 
   it('reports a hovered product link for the command, throttled per URL', async () => {
@@ -320,6 +339,32 @@ describe('synthetic event rejection (C1)', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sendMessage).not.toHaveBeenCalled();
     expect(__test.chipVisible()).toBe(true);
+  });
+});
+
+describe('inline badges', () => {
+  it('paints a scoped badge stylesheet and removes it when disabled', () => {
+    __test.setSettings({ inlineBadges: true });
+    expect(__test.badgePresent()).toBe(true);
+    expect(document.querySelector('style[data-duke-badges]')?.textContent).toContain('bigw.com.au/product/');
+    __test.setSettings({ inlineBadges: false });
+    expect(__test.badgePresent()).toBe(false);
+  });
+
+  it('does not paint badges when the hover chip is off', () => {
+    __test.setSettings({ hoverChip: false, inlineBadges: true });
+    expect(__test.badgePresent()).toBe(false);
+  });
+});
+
+describe('quantity', () => {
+  it('clamps the chip quantity to 1..20', () => {
+    __test.setQuantity(0);
+    expect(__test.getQuantity()).toBe(1);
+    __test.setQuantity(99);
+    expect(__test.getQuantity()).toBe(20);
+    __test.setQuantity(3);
+    expect(__test.getQuantity()).toBe(3);
   });
 });
 

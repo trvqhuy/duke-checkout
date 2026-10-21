@@ -59,7 +59,7 @@ async function intercept(request: HTTPRequest) {
   else if (path.includes('/product-price-api/v1/prices/')) body = [{ price: { centAmount: 1800 }, label: 'PRE-ORDER' }];
   else if (path.startsWith('/warehouse-customer/')) body = [{ state: 'NSW', miraklZone: 'ZONE_1', zoneClassification: 'METRO' }];
   else if (path.startsWith('/api/availability/')) body = availability;
-  else if (path === '/api/stores/v0/list') body = [{ id: 'S1', name: 'Sydney Store', address: { state: 'NSW' } }];
+  else if (path === '/api/stores/v0/list') body = { S1: { id: 'S1', name: 'Sydney Store', address: { suburb: 'Sydney', state: 'NSW', postcode: '2000' } }, S2: { id: 'S2', name: 'Melbourne Store', address: { state: 'VIC', postcode: '3000' } } };
   else if (path.includes('/storefront/v1/cart/')) {
     if (path.endsWith('/create')) {
       const data = request.postData() ? JSON.parse(request.postData()!) : {};
@@ -170,8 +170,8 @@ describe('extension stage-1 integration', () => {
     await appPage.locator('#field-deliveryAddress-suburb').fill(profile.deliveryAddress.suburb);
     await appPage.select('#deliveryAddress-state', 'NSW');
     await appPage.locator('#field-deliveryAddress-postcode').fill(profile.deliveryAddress.postcode);
-    await appPage.locator('.profile-save-row [data-action="save-profile"]').click();
-    // profile.put is asynchronous: wait for the write instead of racing it.
+    // The profile autosaves after a short debounce (there is no Save button).
+    // profile.put validates and normalises the phone to E.164; wait for it.
     const readProfile = () => appPage.evaluate(async () => (await chrome.storage.local.get(['dukeProfile'])).dukeProfile);
     let storedProfile;
     for (let attempt = 0; attempt < 40; attempt++) {

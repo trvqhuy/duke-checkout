@@ -11,7 +11,12 @@ export function modeNeedsCard(mode: RunMode): boolean {
 
 export function parseProductLink(value: string): { url: string; code: string } {
   const url = new URL(value.trim());
-  const match = url.pathname.match(/^\/product\/[^/]+\/p\/(\d{3,12})\/?$/);
+  // Live search/category links append a variant slug to the article number:
+  //   /product/huggies-romper/p/1813326-sprfloral
+  // The variant slug is PART OF THE PRODUCT CODE at BIG W: the product API
+  // returns [] for the bare number and the matching product for the full code.
+  // Keep it for both the URL and the API/cart calls.
+  const match = url.pathname.match(/^\/product\/[^/]+\/p\/(\d{3,12}(?:-[A-Za-z0-9-]+)?)\/?$/);
   if (url.protocol !== 'https:' || !['www.bigw.com.au', 'bigw.com.au'].includes(url.hostname)
     || url.username || url.password || url.port || !match) {
     throw new Error('Use a secure BIG W product link ending in /p/article-number.');
@@ -101,6 +106,7 @@ const runSchema = z.object({
   mode: z.enum(['prepare', 'assist', 'purchase', 'afterpay']),
   profile: profileSchema,
   card: paymentSchema.optional(),
+  replaceCart: z.boolean().optional().default(true),
 }).strict().superRefine((input, context) => {
   if ((input.mode === 'assist' || input.mode === 'purchase') && !input.card) {
     context.addIssue({ code: 'custom', path: ['card'], message: 'Enter a payment method for this mode.' });

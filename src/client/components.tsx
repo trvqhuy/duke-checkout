@@ -1,7 +1,7 @@
 import { useEffect, useState, type InputHTMLAttributes, type ReactNode } from 'react';
 import { STAGES, type Address, type CheckoutRun, type ProductInfo, type Profile, type RunMode, type SavedCard } from '../shared/types.ts';
 
-export function Icon({ name, size = 18 }: { name: 'arrow' | 'check' | 'browser' | 'link' | 'close' | 'edit' | 'lock' | 'plus' | 'external' | 'eye'; size?: number }) {
+export function Icon({ name, size = 18 }: { name: 'arrow' | 'check' | 'browser' | 'link' | 'close' | 'edit' | 'lock' | 'plus' | 'external' | 'eye' | 'user' | 'card' | 'sliders' | 'clock' | 'shield' | 'spark' | 'store'; size?: number }) {
   const paths: Record<string, ReactNode> = {
     arrow: <path d="M4 12h15m-6-6 6 6-6 6" />,
     check: <path d="m5 12 4 4L19 6" />,
@@ -13,8 +13,15 @@ export function Icon({ name, size = 18 }: { name: 'arrow' | 'check' | 'browser' 
     plus: <path d="M12 5v14M5 12h14" />,
     external: <><path d="M14 3h7v7m0-7L10 14" /><path d="M10 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-5" /></>,
     eye: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
+    user: <><circle cx="12" cy="8" r="3.5" /><path d="M4.5 20a7.5 7.5 0 0 1 15 0" /></>,
+    card: <><rect x="2.5" y="5" width="19" height="14" rx="3" /><path d="M2.5 10h19" /><path d="M6 15h4" /></>,
+    sliders: <><path d="M4 7h9m4 0h3M4 17h3m4 0h9" /><circle cx="15" cy="7" r="2.2" /><circle cx="9" cy="17" r="2.2" /></>,
+    clock: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></>,
+    shield: <><path d="M12 3.5 19 6v5.2c0 4.4-2.9 7.6-7 9.3-4.1-1.7-7-4.9-7-9.3V6l7-2.5Z" /><path d="m9.2 12 2 2 3.8-4" /></>,
+    spark: <><path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" /><path d="M18.5 16.5 19 18l1.5.5-1.5.5-.5 1.5-.5-1.5L16.5 18l1.5-.5.5-1Z" /></>,
+    store: <><path d="M3.5 9.5 5 4h14l1.5 5.5" /><path d="M4 9.5h16V20H4z" /><path d="M9.5 20v-6h5v6" /></>,
   };
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
 export const money = (cents: number) => new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' }).format(cents / 100);
@@ -74,7 +81,7 @@ export function PaymentFields({ card, setCard, cards, errors, refresh, refreshin
   return <div className="payment-fields">
     <div className="payment-choice-row">
       <div className="small-segment" role="group" aria-label="Card source"><button type="button" className={card.kind === 'new' ? 'selected' : ''} onClick={() => setCard({ ...card, kind: 'new', cvv: '' })}>New card</button><button type="button" className={card.kind === 'saved' ? 'selected' : ''} onClick={() => setCard({ ...card, kind: 'saved', cvv: '', cardId: card.cardId || cards[0]?.id || '' })}>Saved card</button></div>
-      <span className="subtle-label"><Icon name="lock" size={13} /> This run only</span>
+      <span className="subtle-label"><Icon name="lock" size={13} /> Wpay secure fields</span>
     </div>
     {card.kind === 'new' ? <>
       <Field name="card.number" label="Card number" value={card.number} onChange={number => setCard({ ...card, number: number.replace(/[^\d -]/g, '').slice(0, 23) })} type={show ? 'text' : 'password'} inputMode="numeric" autoComplete="cc-number" placeholder="Card number" required errors={errors} suffix={<button type="button" className="icon-button" onClick={() => setShow(!show)} aria-label={show ? 'Hide card number' : 'Show card number'} aria-pressed={show}><Icon name="eye" size={17} /></button>} />
@@ -82,20 +89,21 @@ export function PaymentFields({ card, setCard, cards, errors, refresh, refreshin
         <Field name="card.expiry" label="Expiry date" value={card.expiry} onChange={value => { const digits = value.replace(/\D/g, ''); const normalized = digits.length >= 6 ? digits.slice(0, 2) + digits.slice(-2) : digits.slice(0, 4); setCard({ ...card, expiry: normalized.length > 2 ? normalized.slice(0, 2) + '/' + normalized.slice(2) : normalized }); }} inputMode="numeric" autoComplete="cc-exp" placeholder="MM/YY" required errors={errors} />
         <Field name="card.cvv" label="Security code" value={card.cvv} onChange={cvv => setCard({ ...card, cvv: cvv.replace(/\D/g, '').slice(0, 4) })} type="password" inputMode="numeric" autoComplete="cc-csc" placeholder="CVV" maxLength={4} required errors={errors} />
       </div>
-      <p className="fine-print">Filled into BIG W’s Wpay secure fields. BIG W’s current checkout saves new cards to your retailer account. Duke doesn’t save card details.</p>
+      <p className="fine-print">Filled into BIG W’s Wpay secure fields. BIG W’s current checkout saves new cards to your retailer account. Duke keeps the card only when you ask it to, and never in run history.</p>
     </> : <>
       <div className="field"><label htmlFor="saved-card">BIG W saved card</label><select id="saved-card" value={card.cardId} onChange={event => setCard({ ...card, cardId: event.target.value })} aria-invalid={!!errors['card.cardId']}><option value="">{cards.length ? 'Choose a saved card' : 'No cards loaded'}</option>{cards.map(saved => <option value={saved.id} key={saved.id}>{saved.brand} ending {saved.last4}</option>)}</select>{errors['card.cardId'] && <span className="field-error">{errors['card.cardId']}</span>}</div>
       <div className="saved-card-bottom"><Field name="card.cvv" label="Security code" value={card.cvv} onChange={cvv => setCard({ ...card, cvv: cvv.replace(/\D/g, '').slice(0, 4) })} type="password" inputMode="numeric" autoComplete="cc-csc" placeholder="CVV" required errors={errors} /><button type="button" className="text-button" onClick={refresh} disabled={refreshing}>{refreshing ? 'Loading…' : 'Refresh saved cards'}</button></div>
-      <p className="fine-print">Uses a card already stored with BIG W. The security code is needed for this purchase and isn’t saved by Duke.</p>
+      <p className="fine-print">Uses a card already stored with BIG W. The security code is needed for the purchase; Duke only keeps it when you save the card for one-click.</p>
     </>}
     {errors.card && <p className="field-error">{errors.card}</p>}
   </div>;
 }
 
-export function ProductPreview({ product, quantity }: { product: ProductInfo; quantity: number }) {
-  return <div className="product-preview">
-    <div className="product-image">{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <span>BW</span>}</div>
-    <div className="product-description"><div className="product-eyebrow">BIG W <span>·</span> {product.code}</div><h3>{product.title}</h3><div className="product-meta"><span className={`badge ${product.available ? 'sage' : 'rose'}`}>{product.stockLabel}</span><span className="mono">{money(product.priceCents)} × {quantity}</span></div>{product.releaseLabel && <p className="product-release">{product.releaseLabel}</p>}</div>
+export function ProductPreview({ product, quantity, compact = false }: { product: ProductInfo; quantity: number; compact?: boolean }) {
+  const [broken, setBroken] = useState(false);
+  return <div className={`product-preview ${compact ? 'compact' : ''}`}>
+    <div className="product-image">{product.imageUrl && !broken ? <img src={product.imageUrl} alt="" onError={() => setBroken(true)} /> : <span>BW</span>}</div>
+    <div className="product-description"><div className="product-eyebrow">BIG W <span>·</span> {product.code}</div><h3>{product.title}</h3>{!compact && <div className="product-meta"><span className={`badge ${product.available ? 'sage' : 'rose'}`}>{product.stockLabel}</span><span className="mono">{money(product.priceCents)} × {quantity}</span></div>}{!compact && product.releaseLabel && <p className="product-release">{product.releaseLabel}</p>}</div>
   </div>;
 }
 

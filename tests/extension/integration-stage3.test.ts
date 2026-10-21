@@ -18,7 +18,7 @@ import { rm } from 'node:fs/promises';
 import type { Browser, Page } from 'puppeteer-core';
 import {
   RetailerFixture, assertExtensionBuilt, PRODUCT_CODE,
-  launchExtensionBrowser, makeTemporaryDir, profile, testCard, waitForBridgePing, findOrOpenAppTab, keepOnlyAppTab,
+  launchExtensionBrowser, makeTemporaryDir, interceptNewTabs, profile, testCard, waitForBridgePing, findOrOpenAppTab, keepOnlyAppTab,
 } from './fixture-retailer.ts';
 
 // The link the foreign page points at; the fixture answers code 6071620. It has
@@ -55,6 +55,7 @@ interface RunRecord {
   id: string;
   status: string;
   productCode: string;
+  quantity: number;
   orderNumber?: string;
   error?: { code: string; message: string };
 }
@@ -109,6 +110,20 @@ async function sessionArmed(): Promise<ArmedRecord | null> {
     const stored = await chrome.storage.session.get(['dukeArmed']);
     return (stored.dukeArmed ?? null) as { productCode?: string; productUrl?: string } | null;
   });
+}
+
+interface OpenTab { id: number; url: string; active: boolean }
+async function openTabs(): Promise<OpenTab[]> {
+  return appPage.evaluate(async () => (await chrome.tabs.query({})).map(tab => ({ id: tab.id!, url: tab.url ?? '', active: !!tab.active })));
+}
+
+// A successful run leaves its presentation tab on the BIG W checkout. Close it
+// between scenarios so acquireWorkTab cannot pick a stale checkout from the
+// previous test.
+async function closeExtraWorkTabs(): Promise<void> {
+  const ids = (await openTabs()).filter(tab => tab.url.includes('bigw.com.au/checkout/')).map(tab => tab.id);
+  if (!ids.length) return;
+  await appPage.evaluate(async (tabIds) => { await Promise.all(tabIds.map(id => chrome.tabs.remove(id).catch(() => undefined))); }, ids).catch(() => undefined);
 }
 
 async function waitForArmed(productCode: string, timeout = 40_000): Promise<ArmedRecord> {
@@ -179,6 +194,14 @@ async function syntheticClickChip(page: Page, selector: string): Promise<void> {
   }, selector);
 }
 
+async function chipText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const host = Array.from(document.querySelectorAll('*'))
+      .find(element => !!element.shadowRoot?.querySelector('.duke-chip'));
+    return host?.shadowRoot?.textContent ?? '';
+  });
+}
+
 beforeAll(async () => {
   assertExtensionBuilt();
   temporary = await makeTemporaryDir('duke-extension-stage3-');
@@ -187,6 +210,7 @@ beforeAll(async () => {
   workPage = await browser.newPage();
   await workPage.setRequestInterception(true);
   workPage.on('request', request => fixture.intercept(request).catch(async () => { if (!request.isInterceptResolutionHandled()) return request.abort('failed', 100); }));
+  await interceptNewTabs(browser, fixture);
   workPage.on('pageerror', error => fixture.runtimeErrors.push(`work pageerror: ${String(error)}`));
   await workPage.goto('https://www.bigw.com.au/', { waitUntil: 'load' });
 
@@ -220,6 +244,7 @@ beforeEach(async () => {
   // Drop any armed checkout (cache + session storage) so each scenario starts
   // from an unarmed state, then seed a configured browser.
   await sendToBackground('arm.clear');
+  await closeExtraWorkTabs();
   await seedState({ settings: SETTINGS, profile, card: { number: testCard.number, expiry: testCard.expiry, cvv: testCard.cvv } });
   // Reset the work tab to the BIG W root (seeds the Auth0 cache; the bridge
   // answers again) and the foreign page (fresh link-scout settings cache).
@@ -237,12 +262,102 @@ describe('extension stage-3 integration', () => {
     await hoverProductLink(foreignPage, '#product-link');
     await clickChip(foreignPage, '.duke-chip-checkout');
 
+    // The trigger opens a progress tab BEFORE the run starts. That same tab is
+    // then navigated to the retailer checkout — never the settings page, never
+    // a second tab appearing at the end.
+    let progressTab: OpenTab | undefined;
+    const progressDeadline = Date.now() + 8_000;
+    while (Date.now() < progressDeadline && !progressTab) {
+      progressTab = (await openTabs()).find(tab => tab.url.includes('/progress.html?request='));
+      if (!progressTab) await sleep(50);
+    }
+    expect(progressTab, JSON.stringify(await openTabs())).toBeDefined();
+    expect(progressTab!.active).toBe(true);
+
     const run = await waitForNewTerminalRun(PRODUCT_CODE, beforeIds);
     expect(run.status, JSON.stringify(run)).toBe('succeeded');
     expect(run.orderNumber).toBe('ORD-1');
     expect(fixture.payPosts).toBe(1);
+
+    const tabs = await openTabs();
+    const checkout = tabs.find(tab => tab.url.includes('/checkout/'));
+    expect(checkout?.id).toBe(progressTab!.id);
+    // The extension's own page never appears as part of a checkout.
+    expect(tabs.filter(tab => tab.url.includes('/app.html')).length).toBe(1);
     expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
   }, 120_000);
+
+  it('chip quantity reaches the run and the cart', async () => {
+    const beforeIds = new Set((await runList()).map(run => run.id));
+    await foreignPage.bringToFront();
+    await hoverProductLink(foreignPage, '#product-link');
+    // A real trusted click on the stepper, then checkout.
+    const plus = await chipButtonCenter(foreignPage, '.duke-qty-plus');
+    await foreignPage.mouse.click(plus.x, plus.y);
+    await sleep(100);
+    expect(await chipText(foreignPage)).toContain('2');
+    await clickChip(foreignPage, '.duke-chip-checkout');
+
+    const run = await waitForNewTerminalRun(PRODUCT_CODE, beforeIds);
+    expect(run.status, JSON.stringify(run)).toBe('succeeded');
+    expect(run.quantity).toBe(2);
+    expect(fixture.payPosts).toBe(1);
+    // The chip remembers the choice as the new default for the next hover.
+    const stored = await appPage.evaluate(async () => (await chrome.storage.local.get(['dukeSettings'])).dukeSettings) as { quantity?: number };
+    expect(stored.quantity).toBe(2);
+    expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
+  }, 120_000);
+
+  it('a chip checkout without a card stays in place and offers setup', async () => {
+    await seedState({ card: null });
+    const before = await openTabs();
+    const beforeRuns = new Set((await runList()).map(run => run.id));
+    await foreignPage.bringToFront();
+    await hoverProductLink(foreignPage, '#product-link');
+    await clickChip(foreignPage, '.duke-chip-checkout');
+
+    await foreignPage.waitForFunction(() => {
+      const host = Array.from(document.querySelectorAll('*')).find(element => !!element.shadowRoot?.querySelector('.duke-chip'));
+      return (host?.shadowRoot?.textContent ?? '').includes('Add a card');
+    }, { timeout: 10_000, polling: 100 });
+    const text = await chipText(foreignPage);
+    expect(text).toContain('Open Duke setup');
+    // No progress tab, no settings hijack, no run.
+    const after = await openTabs();
+    expect(after.map(tab => tab.id).sort()).toEqual(before.map(tab => tab.id).sort());
+    expect((await runList()).filter(run => !beforeRuns.has(run.id))).toEqual([]);
+    expect(fixture.payPosts).toBe(0);
+    expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
+  }, 60_000);
+
+  it('the progress tab can cancel a run before payment', async () => {
+    fixture.delayCreateMs = 3_000;
+    const beforeIds = new Set((await runList()).map(run => run.id));
+    await foreignPage.bringToFront();
+    await hoverProductLink(foreignPage, '#product-link');
+    await clickChip(foreignPage, '.duke-chip-checkout');
+
+    let progressPage: Page | undefined;
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline && !progressPage) {
+      progressPage = (await browser.pages()).find(page => page.url().includes('/progress.html'));
+      if (!progressPage) await sleep(100);
+    }
+    expect(progressPage, 'progress tab was not opened').toBeTruthy();
+    await progressPage!.waitForFunction(() => {
+      const button = Array.from(document.querySelectorAll('#actions button')).find(element => element.textContent === 'Cancel');
+      return !!button;
+    }, { timeout: 10_000, polling: 100 });
+    await progressPage!.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('#actions button')).find(element => element.textContent === 'Cancel') as HTMLButtonElement | undefined;
+      button?.click();
+    });
+
+    const run = await waitForNewTerminalRun(PRODUCT_CODE, beforeIds);
+    expect(run.status).toBe('cancelled');
+    expect(fixture.payPosts).toBe(0);
+    expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
+  }, 90_000);
 
   it('chip Arm stores dukeArmed for the product and starts no run', async () => {
     const beforeIds = new Set((await runList()).map(run => run.id));
@@ -294,22 +409,27 @@ describe('extension stage-3 integration', () => {
     expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
   }, 120_000);
 
-  it('unconfigured checkout opens onboarding, imports the profile, and persists it', async () => {
+  it('an unconfigured checkout is answered in place and never hijacks the app tab', async () => {
     await seedState({ profile: null });
-    // Sent from the extension app page: page.evaluate runs in the page's MAIN
-    // world, where a non-extension page has no chrome.runtime. The trigger
-    // re-points this very tab at onboarding, so a context teardown on
-    // navigation is expected and swallowed.
-    await appPage.evaluate(async (url) => { await chrome.runtime.sendMessage({ type: 'trigger.checkout', url }); }, FOREIGN_PRODUCT_URL).catch(() => undefined);
+    const before = await openTabs();
+    const beforeRuns = new Set((await runList()).map(run => run.id));
+    const result = await appPage.evaluate(async (url) => {
+      return await chrome.runtime.sendMessage({ type: 'trigger.checkout', url, quantity: 2 }) as { ok?: boolean; code?: string } | undefined;
+    }, FOREIGN_PRODUCT_URL);
+    expect(result).toMatchObject({ ok: false, code: 'PROFILE_REQUIRED' });
+    // No onboarding navigation, no progress tab, no run.
+    const after = await openTabs();
+    expect(after.map(tab => tab.id).sort()).toEqual(before.map(tab => tab.id).sort());
+    expect(appPage.url()).toContain('/app.html');
+    expect(appPage.url()).not.toContain('onboarding=1');
+    expect((await runList()).filter(run => !beforeRuns.has(run.id))).toEqual([]);
+    expect(fixture.runtimeErrors, fixture.runtimeErrors.join('\n')).toEqual([]);
+  }, 60_000);
 
-    // openAppPage re-points the existing app tab at app.html?onboarding=1&product=…
-    await appPage.waitForFunction(() => location.search.includes('onboarding=1'), { timeout: 20_000, polling: 200 })
-      .catch(async (error: unknown) => { throw new Error(`onboarding URL never appeared; tab is ${appPage.url()} - ${String(error).slice(0, 120)}`); });
-    const landed = new URL(appPage.url());
-    expect(landed.pathname.endsWith('/app.html')).toBe(true);
-    expect(landed.searchParams.get('onboarding')).toBe('1');
-    expect(landed.searchParams.get('product')).toBe(FOREIGN_PRODUCT_URL);
-
+  it('the setup page imports the BIG W profile and persists it', async () => {
+    await seedState({ profile: null });
+    await appPage.goto(`chrome-extension://${extensionId}/app.html?onboarding=1`, { waitUntil: 'domcontentloaded' });
+    await appPage.waitForSelector('#field-quantity', { timeout: 20_000 });
     await appPage.waitForSelector('.onboarding-panel', { timeout: 20_000 });
     await appPage.evaluate(() => {
       const button = Array.from(document.querySelectorAll('.onboarding-panel button'))

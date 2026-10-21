@@ -22,11 +22,13 @@ export default defineConfig({
       input: {
         background: resolve(root, 'src/extension/background/service-worker.ts'),
         app: resolve(root, 'src/extension/app/app.html'),
+        progress: resolve(root, 'src/extension/progress/progress.html'),
       },
       output: {
         entryFileNames: chunk => {
           if (chunk.name === 'background') return 'background.js';
           if (chunk.name === 'app') return 'app.js';
+          if (chunk.name === 'progress') return 'progress.js';
           return 'content/[name].js';
         },
         chunkFileNames: 'chunks/[name]-[hash].js',
@@ -55,11 +57,19 @@ export default defineConfig({
       copyFileSync(resolve(root, 'src/extension/manifest.json'), resolve(root, 'dist-extension/manifest.json'));
       // The manifest declares icons/, so the built extension must contain them.
       cpSync(resolve(root, 'src/extension/icons'), resolve(root, 'dist-extension/icons'), { recursive: true });
-      const htmlOut = resolve(root, 'dist-extension/src/extension/app/app.html');
-      if (!existsSync(htmlOut)) {
-        throw new Error('Vite output layout changed: app.html not found at expected path (dist-extension/src/extension/app/app.html)');
+      // Vite nests HTML entries under their source path. Both extension pages
+      // must sit at the extension root so chrome.runtime.getURL('app.html') and
+      // getURL('progress.html') resolve.
+      const pages: Array<[string, string]> = [
+        [resolve(root, 'dist-extension/src/extension/app/app.html'), resolve(root, 'dist-extension/app.html')],
+        [resolve(root, 'dist-extension/src/extension/progress/progress.html'), resolve(root, 'dist-extension/progress.html')],
+      ];
+      for (const [from, to] of pages) {
+        if (!existsSync(from)) {
+          throw new Error(`Vite output layout changed: ${from.replace(root, '')} not found`);
+        }
+        renameSync(from, to);
       }
-      renameSync(htmlOut, resolve(root, 'dist-extension/app.html'));
       rmSync(resolve(root, 'dist-extension/src'), { recursive: true, force: true });
     },
   }],

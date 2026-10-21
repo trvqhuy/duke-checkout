@@ -7,6 +7,12 @@ describe('checkout inputs', () => {
     expect(parseProductLink(productUrl + '?tracking=example#details')).toEqual({ url: productUrl, code: '6071620' });
   });
 
+  it('accepts a live variant suffix and keeps it in the product code', () => {
+    const variant = 'https://www.bigw.com.au/product/huggies-babywear-organic-cotton-romper-multi/p/1813326-sprfloral';
+    expect(parseProductLink(variant)).toEqual({ url: variant, code: '1813326-sprfloral' });
+    expect(parseProductLink(`${variant}?tracking=example`)).toEqual({ url: variant, code: '1813326-sprfloral' });
+  });
+
   it.each([
     'https://bigw.com.au.attacker.example/product/book/p/6071620',
     'https://www.bigw.com.au/cart',

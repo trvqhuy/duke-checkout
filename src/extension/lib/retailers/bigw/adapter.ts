@@ -51,6 +51,7 @@ import { STANDBY_CODES } from '../../../../shared/armed.ts';
 import { buildProductInfo, parseCartState, record, string } from '../../../../server/browser/bigw-model.ts';
 import { isPaymentEndpoint, isVaultEndpoint, interpretPaymentResult } from '../../../../server/browser/payment.ts';
 import { AppError, checkAbort } from '../../../../server/errors.ts';
+import { guardCart } from '../../../../shared/cart-guard.ts';
 import { bridgeRequest } from '../../../background/bridge-client.ts';
 import { scopesForPath } from '../../../content/api-bridge-main.ts';
 import type { BridgeHandle, DriverFrame, DriverHandle, RetailerAdapter } from '../types.ts';
@@ -73,13 +74,79 @@ function orderReference(body: Record<string, unknown>): string | undefined {
   return (typeof value === 'string' || typeof value === 'number') && /^[\w-]{3,80}$/.test(String(value)) ? String(value) : undefined;
 }
 
+// The live /api/stores/v0/list returns an OBJECT MAP keyed by store id
+// ({"0130":{"id":"0130","name":"BIG W Carnes Hill","address":{...}},...}), while
+// fixtures and older builds return an array or { stores: [...] }. The previous
+// code only understood the array shapes, so the real response was read as "no
+// stores" and every preparation ended at STORE_REQUIRED. Normalise all three.
+export type StoreRecord = Record<string, unknown>;
+
+function storeList(value: unknown): StoreRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(item => record(item))
+    .filter(item => typeof item.id === 'string' || typeof item.name === 'string');
+}
+
+export function normalizeStores(value: unknown): StoreRecord[] {
+  if (Array.isArray(value)) return storeList(value);
+  const object = record(value);
+  if (Array.isArray(object.stores)) return storeList(object.stores);
+  // A plain object keyed by store id: every value is a store record. Filter out
+  // any metadata keys that do not look like a store.
+  return Object.values(object)
+    .map(item => record(item))
+    .filter(item => typeof item.id === 'string' || typeof item.name === 'string');
+}
+
+// Prefer a store in the delivery postcode, then the same state, then any store.
+// Delivery availability and fulfilment are keyed by postcode/suburb, but a
+// store in the same region keeps the retailer's own store-scoped data coherent.
+export function pickStore(value: unknown, address: Pick<Address, 'postcode' | 'state'>): StoreRecord | undefined {
+  const stores = normalizeStores(value);
+  const postcode = String(address.postcode ?? '');
+  return stores.find(store => String(record(store.address).postcode ?? '') === postcode)
+    ?? stores.find(store => String(record(store.address).state ?? '') === address.state)
+    ?? stores[0];
+}
+
 export class BigWExtensionAdapter implements RetailerAdapter {
   readonly urlPattern = /https:\/\/www\.bigw\.com\.au\/product\/[^/]+\/p\/(\d+)/;
   private location?: Location;
   // Set once a card fill persisted secure-field values; clearSensitiveFields()
   // only wipes when a fill actually happened (same gate as PaymentDriver.clear).
   private filled = false;
-  constructor(private acquire: () => Promise<BridgeHandle>, private armedStore?: { get(): ArmedCheckout | null; set(armed: ArmedCheckout | null): void }) {}
+  // Presentation tab plumbing. The trigger opens progress.html before the run
+  // and registers it here; the matching run replaces that tab with the real
+  // checkout instead of opening a second one. requestId keeps a stale tab from
+  // a failed run out of a later app-page run.
+  private presentation?: { tabId: number; requestId: string };
+  private runRequestId?: string;
+  // The page context (store/cart ids) resolved during inspect, reused by
+  // prepareCart so a run does not ask the bridge twice.
+  private pageContextCache?: { storeId?: string; cartId?: string | null; delivery?: Record<string, unknown> | null } | null;
+  // The checkout tab this run is driving. After revealPrepared, every
+  // driver-backed step must stay on THIS tab; picking "a BIG W tab" again could
+  // land on a stale checkout from an earlier run.
+  private checkoutTabId?: number;
+  constructor(private acquire: (pinnedTabId?: number) => Promise<BridgeHandle>, private armedStore?: { get(): ArmedCheckout | null; set(armed: ArmedCheckout | null): void }) {}
+
+  // Called by the RunManager as a run starts. A presentation tab only applies to
+  // the run it was opened for.
+  beginRun(requestId: string): void {
+    this.runRequestId = requestId;
+    this.checkoutTabId = undefined;
+    this.pageContextCache = undefined;
+    if (this.presentation?.requestId !== requestId) this.presentation = undefined;
+  }
+  endRun(): void {
+    this.runRequestId = undefined;
+    this.checkoutTabId = undefined;
+    this.presentation = undefined;
+    this.pageContextCache = undefined;
+  }
+  setPresentationTab(tabId: number, requestId: string): void { this.presentation = { tabId, requestId }; }
+  clearPresentationTab(): void { this.presentation = undefined; }
 
   // Every store call is bridged through the work tab. Authenticated calls carry
   // their required scopes so the MAIN world resolves a matching token.
@@ -117,12 +184,12 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     const zone = record(Array.isArray(zones) ? zones[0] : zones);
     if (zone.state && zone.state !== address.state) throw new AppError('ADDRESS_LOCATION', 'The suburb/postcode does not match the selected state. Check the delivery address.');
     const context = await this.pageContext(handle);
+    this.pageContextCache = context;
     let storeId = string(context?.storeId ?? '');
     if (!storeId) {
       const data = await this.req(handle, '/api/stores/v0/list', 'GET', undefined, 'https://api.bigw.com.au', true);
-      const stores = Array.isArray(data) ? data : record(data).stores;
-      const store = Array.isArray(stores) ? stores.find(item => string(record(record(item).address).state) === address.state) ?? stores[0] : undefined;
-      storeId = string(record(store).id, string(record(store).name));
+      const store = pickStore(data, address);
+      storeId = string(store?.id, string(store?.name));
     }
     if (!storeId) throw new AppError('STORE_REQUIRED', 'Choose a local store once on BIG W, then prepare again.');
     return { storeId, zone: string(zone.miraklZone) || undefined, zoneType: string(zone.zoneClassification) || undefined };
@@ -170,51 +237,125 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     const handle = await this.acquire();
     const location = this.location ?? await this.locationFor(handle, input.profile);
     const address = input.profile.deliveryAddress;
-    report('cart', 'Preparing a cart containing only the requested item.');
     checkAbort(signal);
-    // Reuse the page's current cart when it already holds exactly this item
-    // (server parity: avoids an extra cart create on repeat runs).
-    const context = await this.pageContext(handle);
+    // BIG W keeps ONE cart per signed-in account. The live site adds/updates
+    // that cart instead of calling the legacy /cart/create endpoint (which the
+    // edge now rejects with 403). Reuse it, replace its contents when needed,
+    // and skip the detail mutations when the account cart already matches.
+    const context = this.pageContextCache ?? await this.pageContext(handle);
+    this.pageContextCache = context;
     let cart: CartState | undefined;
+    let reused = false;
     if (context?.cartId) {
       try {
-        const existing = parseCartState(await this.req(handle, `/storefront/v1/cart/${encodeURIComponent(context.cartId)}?state=${address.state}&channel=web`));
-        if (existing.entries.length === 1 && existing.entries[0].productCode === product.code && existing.entries[0].quantity === input.quantity) cart = existing;
+        cart = await this.readCart(handle, context.cartId, address.state);
+        reused = true;
       } catch (error) {
-        if (!(error instanceof AppError) || ['LOGIN_REQUIRED', 'SESSION_EXPIRED', 'BROWSER_ATTENTION'].includes(error.code)) throw error;
+        if (!(error instanceof AppError) || !['LOGIN_REQUIRED', 'SESSION_EXPIRED', 'BROWSER_ATTENTION', 'STORE_REQUEST'].includes(error.code)) throw error;
       }
     }
     checkAbort(signal);
-    if (!cart) {
+    if (cart) {
+      const exact = cart.entries.length === 1 && cart.entries[0].productCode === product.code && cart.entries[0].quantity === input.quantity;
+      if (exact) report('cart', 'Your existing BIG W cart already matches this item.');
+      else cart = await this.fillExistingCart(handle, cart, input, product, location, address, report, signal);
+    } else {
+      report('cart', 'Preparing a cart containing only the requested item.');
       cart = parseCartState(await this.req(handle, '/storefront/v1/cart/create', 'POST', {
         storeId: location.storeId, postcode: address.postcode, suburb: address.suburb.toUpperCase(), state: address.state,
         productCode: product.code, quantity: input.quantity, salesChannel: 'website',
       }));
     }
     if (!cart.id.startsWith('CT_')) throw new AppError('CHECKOUT_VERSION', 'This session returned a different BIG W checkout implementation. Preparation stopped before payment.');
+    if (!reused) {
+      // A brand-new cart has no contact/delivery details yet.
+      report('contact', 'Applying validated delivery and billing details.');
+      await this.applyCartDetails(handle, cart, input, location, address, signal);
+    } else {
+      // The account cart usually already holds the signed-in address/contact.
+      // Only touch it when the authoritative guard says something differs;
+      // this removes 3-4 calls from the common one-click path.
+      try {
+        guardCart(cart, input);
+        report('contact', 'Saved delivery and contact details already match.');
+      } catch (error) {
+        const code = error instanceof AppError ? error.code : '';
+        if (!['ADDRESS_REQUIRED', 'ADDRESS_CHANGED', 'CONTACT_CHANGED', 'CART_INVALID'].includes(code)) throw error;
+        report('contact', 'Applying validated delivery and billing details.');
+        await this.applyCartDetails(handle, cart, input, location, address, signal);
+      }
+    }
+    return { cartId: cart.id, cart, product };
+  }
+
+  private async readCart(handle: BridgeHandle, cartId: string, state: string): Promise<CartState> {
+    return parseCartState(await this.req(handle, `/storefront/v1/cart/${encodeURIComponent(cartId)}?state=${state}&channel=web`));
+  }
+
+  // Make the account cart contain exactly this product and quantity. BIG W
+  // removes an item by updating it to quantity 0; /add adds it. The user can
+  // opt out of replacement (then a non-empty cart fails with a clear message
+  // instead of silently discarding their other items).
+  private async fillExistingCart(
+    handle: BridgeHandle, cart: CartState, input: RunRequest, product: ProductInfo,
+    location: Location, address: RunRequest['profile']['deliveryAddress'], report: StageReporter, signal: AbortSignal,
+  ): Promise<CartState> {
     const id = encodeURIComponent(cart.id);
-    // The three cart detail updates are independent of each other; only the
-    // recalculation must run after all of them. They start together with a small
-    // stagger so the retailer's edge does not see an identical-millisecond burst.
-    report('contact', 'Applying validated delivery and billing details.');
-    const mutations: Array<[number, () => Promise<unknown>]> = [
-      [0, () => this.req(handle, `/storefront/v1/cart/${id}/update-details?channel=web`, 'POST', {
+    const body = (productCode: string, quantity: number) => ({
+      storeId: location.storeId, postcode: address.postcode, suburb: address.suburb.toUpperCase(), state: address.state, productCode, quantity,
+    });
+    const others = cart.entries.filter(entry => entry.productCode !== product.code);
+    const current = cart.entries.find(entry => entry.productCode === product.code);
+    const replace = input.replaceCart !== false;
+    if (!replace && others.length) {
+      throw new AppError('CART_NOT_EMPTY', 'Your BIG W cart already has other items. Turn on “Replace my BIG W cart” in Duke, or empty the cart on BIG W, then try again.');
+    }
+    if (!replace && current && current.quantity !== input.quantity) {
+      throw new AppError('CART_CHANGED', 'The BIG W cart already contains this product at a different quantity. Empty it or turn on cart replacement in Duke.');
+    }
+    if (others.length) {
+      report('cart', `Replacing ${others.length} other cart item${others.length === 1 ? '' : 's'} with this product.`);
+      // Independent removals run together; no artificial stagger.
+      await Promise.all(others.map(entry => this.req(handle, `/storefront/v1/cart/${id}/update?channel=web`, 'POST', body(entry.productCode, 0))));
+    }
+    checkAbort(signal);
+    if (current) {
+      if (current.quantity !== input.quantity) {
+        await this.req(handle, `/storefront/v1/cart/${id}/update?channel=web`, 'POST', body(product.code, input.quantity));
+      }
+    } else {
+      report('cart', 'Adding the product to your BIG W cart.');
+      await this.req(handle, `/storefront/v1/cart/${id}/add?channel=web`, 'POST', body(product.code, 1));
+      if (input.quantity > 1) await this.req(handle, `/storefront/v1/cart/${id}/update?channel=web`, 'POST', body(product.code, input.quantity));
+    }
+    checkAbort(signal);
+    return this.readCart(handle, cart.id, address.state);
+  }
+
+  private async applyCartDetails(
+    handle: BridgeHandle, cart: CartState, input: RunRequest, location: Location,
+    address: RunRequest['profile']['deliveryAddress'], signal: AbortSignal,
+  ): Promise<void> {
+    const id = encodeURIComponent(cart.id);
+    // The three detail mutations are independent; run them together. The old
+    // 120/240 ms stagger was politeness, not a correctness requirement, and it
+    // delayed every one-click checkout.
+    await Promise.all([
+      this.req(handle, `/storefront/v1/cart/${id}/update-details?channel=web`, 'POST', {
         firstName: input.profile.firstName, lastName: input.profile.lastName, phone: input.profile.phone,
         authorityToLeave: false, deliveryAddress: this.apiAddress(address, input.profile), orderType: 'DELIVERY', fulfilmentType: 'DELIVERY',
-      })],
-      [120, () => this.req(handle, `/storefront/v1/cart/${id}/fulfilment-preference?channel=web`, 'POST', {
+      }),
+      this.req(handle, `/storefront/v1/cart/${id}/fulfilment-preference?channel=web`, 'POST', {
         postcode: address.postcode, suburb: address.suburb.toUpperCase(), state: address.state,
         pickupStore: location.storeId, pickupStoresNearby: [location.storeId],
-      })],
-      [240, () => this.req(handle, `/storefront/v1/cart/${id}/billing-address?channel=web`, 'POST', this.apiAddress(input.profile.billingSame ? address : input.profile.billingAddress!, input.profile))],
-    ];
-    await Promise.all(mutations.map(([delay, call]) => new Promise((resolve, reject) => setTimeout(() => call().then(resolve, reject), delay))));
+      }),
+      this.req(handle, `/storefront/v1/cart/${id}/billing-address?channel=web`, 'POST', this.apiAddress(input.profile.billingSame ? address : input.profile.billingAddress!, input.profile)),
+    ]);
     checkAbort(signal);
     await this.req(handle, `/storefront/v1/cart/${id}/recalculate?channel=web`, 'POST', {
       salesChannel: 'website', suburb: address.suburb.toUpperCase(), state: address.state,
       postcode: address.postcode, storeId: location.storeId, pickupStoresNearby: [location.storeId],
     });
-    return { cartId: cart.id, cart, product };
   }
 
   // Server parity for the RunManager port: a full preparation is the cart work
@@ -436,16 +577,24 @@ export class BigWExtensionAdapter implements RetailerAdapter {
     const handle = await this.acquire();
     const driver = this.driverOf(handle);
     const url = await driver.url().catch(() => '');
-    if (opts?.reuseMountedPage && /\/checkout\//.test(url)) {
+    // Consume the trigger's presentation tab once: the tab the user is already
+    // watching becomes the checkout. A mismatched requestId (stale tab from a
+    // failed run) is ignored.
+    const presentation = this.presentation;
+    const presentationTabId = presentation && presentation.requestId === this.runRequestId ? presentation.tabId : undefined;
+    if (presentationTabId !== undefined) this.presentation = undefined;
+    if (opts?.reuseMountedPage && presentationTabId === undefined && /\/checkout\//.test(url)) {
       report('payment', 'The armed checkout is already open — confirming its secure fields.');
       await driver.activate();
+      this.checkoutTabId = handle.tabId;
       await this.ready(handle, signal);
       return;
     }
     // The run prepared everything in the background work tab; the only visible
-    // step is opening the checkout in its own active tab (never the app page).
+    // step is turning the presentation tab into the checkout (never the app
+    // page, never a second blank tab).
     report('payment', 'Opening the prepared checkout.');
-    await driver.openCheckoutTab(CHECKOUT_URL);
+    this.checkoutTabId = await driver.openCheckoutTab(CHECKOUT_URL, { tabId: presentationTabId });
     // A fresh navigation invalidates any guard left over from a prior attempt.
     await driver.guardDisable().catch(() => undefined);
     await this.ready(handle, signal);
@@ -498,7 +647,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
   // bridge; new cards fill the three Gr4vy secure frames, re-resolving each
   // frame and re-filling until the values persist (the checkout rebuilds them).
   async fillCard(card: PaymentInput, opts?: { programmaticSubmit?: boolean }): Promise<void> {
-    const handle = await this.acquire();
+    const handle = await this.acquire(this.checkoutTabId);
     const driver = this.driverOf(handle);
     if (card.kind === 'saved') {
       const cards = await this.req(handle, '/storefront/v1/cart/saved-cards');
@@ -558,7 +707,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
   // Port of PaymentDriver.submit(). The observed request entries are the
   // authoritative record; the MAIN-world guard's events are advisory.
   async pay(prepared: PreparedCheckout, card: PaymentInput, onActionRequired: () => void, signal?: AbortSignal): Promise<PaymentOutcome> {
-    const handle = await this.acquire();
+    const handle = await this.acquire(this.checkoutTabId);
     const driver = this.driverOf(handle);
     if (signal) checkAbort(signal);
     // The MAIN-world observer's ring buffer outlives a run; drop it so a stale
@@ -725,7 +874,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
   // and re-clicks its (lazily mounted) button; a content script cannot observe
   // the hand-off, so report whether a click was performed.
   async startAfterpay(): Promise<boolean> {
-    const handle = await this.acquire();
+    const handle = await this.acquire(this.checkoutTabId);
     const driver = this.driverOf(handle);
     await driver.activate();
     const result = await driver.sendTop({ type: 'driver.clickAfterpay' }).catch(() => undefined) as { clicked?: boolean } | undefined;
@@ -737,7 +886,7 @@ export class BigWExtensionAdapter implements RetailerAdapter {
   async clearSensitiveFields(): Promise<void> {
     if (!this.filled) return;
     this.filled = false;
-    const handle = await this.acquire().catch(() => undefined);
+    const handle = await this.acquire(this.checkoutTabId).catch(() => undefined);
     if (!handle?.driver) return;
     const driver = handle.driver;
     for (const type of ['number', 'expiryDate', 'securityCode']) {

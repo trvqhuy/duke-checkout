@@ -81,7 +81,7 @@ function makeDriver(options: DriverOptions = {}) {
     },
     navigate: async (url: string) => { calls.navigations.push(url); },
 
-    openCheckoutTab: async (url: string) => { calls.checkoutTabs.push(url); },
+    openCheckoutTab: async (url: string) => { calls.checkoutTabs.push(url); return 42; },
     activate: async () => { calls.activate++; },
     url: async () => options.url ?? 'https://www.bigw.com.au/checkout/delivery',
     observe: async () => ({ entries: typeof options.observe === 'function' ? options.observe() : (options.observe ?? []) }),

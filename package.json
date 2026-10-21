@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:browser": "npm run build && tsx scripts/browser-test.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "demo:chips": "tsx scripts/chip-demo.ts",
     "pack:crx": "tsx scripts/pack-extension.ts"
   },
   "dependencies": {

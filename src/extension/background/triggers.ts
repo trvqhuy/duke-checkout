@@ -10,7 +10,7 @@
 // Pure helpers are exported for tests; every chrome.* access happens inside a
 // register/step function so importing this module is side-effect free.
 // ---------------------------------------------------------------------------
-import { getSettings, getProfile, getSessionCard, type DukeSettings } from '../lib/storage.ts';
+import { getSettings, putSettings, getProfile, getCard, type DukeSettings } from '../lib/storage.ts';
 import { isProductUrl } from '../lib/product-url.ts';
 import { isEvent } from '../lib/protocol.ts';
 import { configureAppPage } from './app-page.ts';
@@ -97,7 +97,30 @@ export function resetAutoArmSlots(): void { lastAutoArmAt = 0; }
 // import the pure helpers without a chrome runtime.
 export interface TriggerArm { arm(input: RunRequest, report: StageReporter, signal: AbortSignal): Promise<ArmedCheckout> }
 export interface TriggerRun { start(payload: unknown): Promise<unknown>; activeRunId?: string | null }
-export interface TriggerDeps { adapter: TriggerArm; manager: TriggerRun }
+export interface TriggerDeps {
+  adapter: TriggerArm & {
+    // The run's presentation tab (the progress page) is opened by the trigger
+    // before the run starts, so the checkout can replace it in place instead of
+    // opening a second tab at the end of preparation.
+    setPresentationTab?(tabId: number, requestId: string): void;
+    clearPresentationTab?(): void;
+  };
+  manager: TriggerRun;
+  openProgress?(requestId: string): Promise<number | undefined>;
+  // Refresh a stale BIG W token before a cart operation (the site's SDK only
+  // renews on its own requests; an idle tab's token expires after minutes).
+  prepareSession?(): Promise<void>;
+  // The worker broadcasts the saved default quantity so an open page's chip
+  // steps to the same value.
+  notifySettings?(settings: DukeSettings): void;
+}
+
+// What a trigger tells its caller. The hover chip renders this inline (and can
+// offer the exact fix); menu/shortcut callers ignore it and rely on the
+// notification raised by dispatchTriggerSafely.
+export type TriggerResult =
+  | { ok: true; runId?: string; requestId?: string; armed?: boolean }
+  | { ok: false; code: string; message: string; fields?: Record<string, string> };
 
 let deps: TriggerDeps | null = null;
 export function configureTriggers(next: TriggerDeps): void {
@@ -133,6 +156,7 @@ export function notifyHint(message: string): void {
 // and session storage), and broadcasts the result. The service worker's
 // arm.start handler calls this so both paths stay identical.
 export async function armProduct(url: string, provided?: RunRequest): Promise<ArmedCheckout | null> {
+  await deps?.prepareSession?.().catch(() => undefined);
   const { adapter } = requireDeps();
   let input = provided;
   if (!input) {
@@ -144,6 +168,7 @@ export async function armProduct(url: string, provided?: RunRequest): Promise<Ar
       maxTotalCents: Math.round(Number(settings.maxTotalAUD) * 100),
       mode: settings.mode,
       profile,
+      replaceCart: settings.replaceCart,
     };
   }
   const armed = await adapter.arm(input, () => undefined, new AbortController().signal);
@@ -155,65 +180,109 @@ export async function armProduct(url: string, provided?: RunRequest): Promise<Ar
 }
 
 // --- dispatch ---------------------------------------------------------------
-export async function dispatchTrigger(action: TriggerAction, url: string, _tabId?: number): Promise<void> {
-  if (!isProductUrl(url)) { notifyHint('Open a BIG W product link first.'); return; }
-  const { manager } = requireDeps();
-  const [settings, profile, card] = await Promise.all([getSettings(), getProfile(), getSessionCard()]);
+// A chip can choose a quantity that applies to this run only. The value is
+// clamped to the same 1..20 range the settings form accepts, and saved as the
+// new default so the next hover starts where the user left off.
+export function clampQuantity(value: unknown, fallback = 1): number {
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(20, Math.max(1, number));
+}
+
+export async function dispatchTrigger(
+  action: TriggerAction,
+  url: string,
+  _tabId?: number,
+  opts: { quantity?: number } = {},
+): Promise<TriggerResult> {
+  if (!isProductUrl(url)) return { ok: false, code: 'INVALID_LINK', message: 'Open a BIG W product link first.' };
+  const deps = requireDeps();
+  const { manager } = deps;
+  const [settings, profile, card] = await Promise.all([getSettings(), getProfile(), getCard()]);
   const hasCard = !!card;
   const plan = triggerPlan({ settings, hasProfile: !!profile, hasCard }, action);
+  const quantity = clampQuantity(opts.quantity ?? settings.quantity);
 
   if (plan === 'open-onboarding') {
-    // Never hijack the screen: tell the user what is missing. Clicking the
-    // notification opens Duke (notify.ts handles onClicked).
+    // Never hijack the screen: the chip shows this inline and offers the fix.
     notifyHint('Finish Duke setup first: click this notification to import your BIG W details.');
-    return;
+    return { ok: false, code: 'PROFILE_REQUIRED', message: 'Add your delivery details in Duke first.' };
   }
   if (plan === 'open-app') {
     if (settings.confirmBeforePay) {
       // Review in the real checkout instead of the app page: fill the card and
       // let the user press Pay themselves.
-      await startRun('assist'); return;
+      return startRun('assist', quantity);
     }
     notifyHint('No card saved for this browser session. Click this notification to open Duke and add one.');
-    return;
+    return { ok: false, code: 'CARD_REQUIRED', message: 'Add a card in Duke before checking out.' };
   }
   if (plan === 'arm') {
-    try { await armProduct(url); }
-    catch (error) { console.warn('[duke] arm trigger failed', error); notifyHint(error instanceof Error ? error.message : 'Could not arm this product right now.'); }
-    return;
+    try { await armProduct(url); return { ok: true, armed: true }; }
+    catch (error) {
+      const issue = publicError(error);
+      console.warn('[duke] arm trigger failed', error);
+      notifyHint(issue.message);
+      return { ok: false, code: issue.code, message: issue.message };
+    }
   }
-  await startRun(settings.mode);
+  return startRun(settings.mode, quantity);
 
-  async function startRun(mode: typeof settings.mode): Promise<void> {
+  async function startRun(mode: typeof settings.mode, runQuantity: number): Promise<TriggerResult> {
     const needsCard = modeNeedsCard(mode);
-    if (needsCard && !card) { notifyHint('No card saved for this browser session. Click this notification to open Duke and add one.'); return; }
-    // Background run: no app page. Only the BIG W checkout tab becomes visible
-    // (the adapter reveals it as a fresh active tab when the run reaches it).
-    await manager.start({
-      requestId: crypto.randomUUID(),
-      productUrl: url,
-      quantity: settings.quantity,
-      // validateRun (the RunManager's gate) takes `maxTotal` in dollars; it
-      // converts to cents itself.
-      maxTotal: settings.maxTotalAUD,
-      mode,
-      profile,
-      card: needsCard && card ? { kind: 'new', number: card.number, expiry: card.expiry, cvv: card.cvv } : undefined,
-    });
+    if (needsCard && !card) return { ok: false, code: 'CARD_REQUIRED', message: 'Add a card in Duke before checking out.' };
+    const requestId = crypto.randomUUID();
+    // Open the presentation tab before the run so the user gets instant
+    // feedback and the checkout replaces that tab in place (never a blank tab,
+    // never the settings page).
+    let tabId: number | undefined;
+    try { tabId = await deps.openProgress?.(requestId); } catch { tabId = undefined; }
+    if (tabId !== undefined) deps.adapter.setPresentationTab?.(tabId, requestId);
+    try {
+      // Let BIG W's own SDK renew an expired token before the cart calls. The
+      // progress tab is already visible, so this wait has feedback.
+      await deps.prepareSession?.().catch(() => undefined);
+      const run = await manager.start({
+        requestId,
+        productUrl: url,
+        quantity: runQuantity,
+        // validateRun (the RunManager's gate) takes `maxTotal` in dollars; it
+        // converts to cents itself.
+        maxTotal: settings.maxTotalAUD,
+        mode,
+        profile,
+        replaceCart: settings.replaceCart,
+        card: needsCard && card ? { kind: 'new', number: card.card.number, expiry: card.card.expiry, cvv: card.card.cvv } : undefined,
+      }) as { id?: string } | undefined;
+      void putSettings({ quantity: runQuantity })
+        .then(next => deps.notifySettings?.(next))
+        .catch(() => undefined);
+      return { ok: true, runId: run?.id, requestId };
+    } catch (error) {
+      if (tabId !== undefined) void chrome.tabs.remove(tabId).catch(() => undefined);
+      deps.adapter.clearPresentationTab?.();
+      throw error;
+    }
   }
 }
 
 // Every non-UI entry point (chip, menu, command, SW message) goes through this
-// wrapper: a trigger must never fail silently. Validation errors are shown with
-// their field messages and the app page opens on the product so the user can fix
-// the form and start again.
-export async function dispatchTriggerSafely(action: TriggerAction, url: string, tabId?: number): Promise<void> {
+// wrapper: a trigger must never fail silently. The chip gets the structured
+// result so it can show the exact remedy in place; menu/shortcut paths still
+// raise a notification because they have no on-screen surface.
+export async function dispatchTriggerSafely(
+  action: TriggerAction,
+  url: string,
+  tabId?: number,
+  opts: { quantity?: number } = {},
+): Promise<TriggerResult> {
   try {
-    await dispatchTrigger(action, url, tabId);
+    return await dispatchTrigger(action, url, tabId, opts);
   } catch (error) {
     const issue = publicError(error);
     const detail = issue.fields ? Object.values(issue.fields).join(' ') : '';
     notifyHint(`${issue.message} ${detail}`.trim());
+    return { ok: false, code: issue.code, message: issue.message, fields: issue.fields };
   }
 }
 

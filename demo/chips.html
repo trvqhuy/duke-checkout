@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Deal radar — Duke chip demo</title>
+<style>
+  :root {
+    --ink: #1d1f1b; --muted: #6c7466; --line: #e3e5dc; --paper: #f7f6f0;
+    --card: #fffef9; --green: #2e3b2a; --sage: #e8efe1; --gold: #f0c33c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .page { max-width: 1080px; margin: 0 auto; padding: 30px 24px 70px; }
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding-bottom: 18px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .mark { width: 38px; height: 40px; border-radius: 9px; background: var(--green); color: #f8f5e9; display: grid; place-items: center; font: italic 30px/1 Georgia, serif; padding-bottom: 5px; }
+  h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
+  .sub { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .note { max-width: 360px; text-align: right; color: var(--muted); font-size: 12px; }
+  .note strong { color: var(--ink); }
+  .toolbar { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; flex-wrap: wrap; }
+  .pill { border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 6px 11px; font-size: 12px; color: var(--muted); }
+  .pill.live { background: var(--sage); color: #3d5a35; border-color: #cfdcc4; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+  .deal { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: box-shadow .18s, transform .18s; }
+  .deal:hover { box-shadow: 0 12px 30px rgba(35, 42, 30, .09); transform: translateY(-1px); }
+  .deal a.cover { display: block; aspect-ratio: 4 / 3; background: linear-gradient(145deg, #eef1e7, #e2e7d9); position: relative; text-decoration: none; }
+  .deal a.cover span { position: absolute; inset: 0; display: grid; place-items: center; font: 600 28px/1 Georgia, serif; color: #79866e; letter-spacing: -.04em; }
+  .deal .body { padding: 13px 14px 15px; display: flex; flex-direction: column; gap: 7px; flex: 1; }
+  .deal .eyebrow { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .deal a.title { color: var(--ink); text-decoration: none; font-weight: 620; font-size: 14px; line-height: 1.35; letter-spacing: -.01em; }
+  .deal a.title:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .deal .price { margin-top: auto; display: flex; align-items: baseline; gap: 8px; }
+  .deal .price strong { font-size: 18px; letter-spacing: -.03em; }
+  .deal .price s { color: #9aa291; font-size: 12px; }
+  .deal .meta { display: flex; gap: 7px; flex-wrap: wrap; }
+  .tag { font-size: 10px; border-radius: 999px; padding: 3px 8px; background: #f2f2ea; color: var(--muted); }
+  .tag.sale { background: #fbefd2; color: #7d5c16; }
+  .tag.new { background: var(--sage); color: #3d5a35; }
+  footer { margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: #eef0e7; padding: 1px 5px; border-radius: 4px; }
+  .plain { margin-top: 24px; padding: 14px 16px; background: #f0f2ea; border: 1px dashed #d5dac9; border-radius: 10px; font-size: 12px; color: var(--muted); }
+  .plain a { color: var(--ink); }
+  @media (max-width: 700px) { header { flex-direction: column; align-items: flex-start; } .note { text-align: left; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="brand">
+      <span class="mark">d</span>
+      <div><h1>Deal radar</h1><p class="sub">A local demo page for the Duke hover card.</p></div>
+    </div>
+    <div class="note">
+      <strong>Hover a product title or image.</strong><br />
+      The “Duke” badge and quantity card come from the extension. Checkout is real — use a product you actually want, or just hover.
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <span class="pill live">Extension running</span>
+    <span class="pill">5 static product links</span>
+    <span class="pill">1 link added after 2 s</span>
+    <span class="pill">1 non-product link</span>
+  </div>
+
+  <div class="grid" id="grid">
+    <article class="deal">
+      <a class="cover" href="https://www.bigw.com.au/product/a-court-of-splintered-harmony/p/6071620" aria-label="A Court of Splintered Harmony">
+        <span>ACOS</span>
+      </a>
+      <div class="body">
+        <span class="eyebrow">Books</span>
+        <a class="title" href="https://www.bigw.com.au/product/a-court-of-splintered-harmony/p/6071620">A Court of Splintered Harmony: The Valkyrie Cycle Movement 1</a>
+        <div class="meta"><span class="tag new">Pre-order</span><span class="tag">Release 27 Oct</span></div>
+        <div class="price"><strong>$18.00</strong></div>
+      </div>
+    </article>
+
+    <article class="deal">
+      <a class="cover" href="https://www.bigw.com.au/product/huggies-babywear-organic-cotton-romper-multi/p/1813334" aria-label="Huggies Babywear Organic Cotton Romper">
+        <span>HUG</span>
+      </a>
+      <div class="body">
+        <span class="eyebrow">Baby</span>
+        <a class="title" href="https://www.bigw.com.au/product/huggies-babywear-organic-cotton-romper-multi/p/1813334">Huggies Babywear Organic Cotton Romper — Multi</a>
+        <div class="meta"><span class="tag new">New</span><span class="tag">Specific variant</span></div>
+        <div class="price"><strong>$16.00</strong></div>
+      </div>
+    </article>
+
+    <article class="deal">
+      <a class="cover" href="https://www.bigw.com.au/product/somersault-scratch-art-book-assorted-/p/6065835" aria-label="Somersault Scratch Art Book">
+        <span>ART</span>
+      </a>
+      <div class="body">
+        <span class="eyebrow">Craft</span>
+        <a class="title" href="https://www.bigw.com.au/product/somersault-scratch-art-book-assorted-/p/6065835">Somersault Scratch Art Book — Assorted</a>
+        <div class="meta"><span class="tag sale">$3.50</span><span class="tag">Clean link</span></div>
+        <div class="price"><strong>$3.50</strong></div>
+      </div>
+    </article>
+
+    <article class="deal">
+      <a class="cover" href="https://www.bigw.com.au/product/lizzie-mcguire-women-s-print-pyjama-set-light-blue/p/1824575-lightblue" aria-label="Lizzie McGuire pyjama set">
+        <span>PJ</span>
+      </a>
+      <div class="body">
+        <span class="eyebrow">Women’s</span>
+        <a class="title" href="https://www.bigw.com.au/product/lizzie-mcguire-women-s-print-pyjama-set-light-blue/p/1824575-lightblue">Lizzie McGuire Women’s Print Pyjama Set — Light Blue</a>
+        <div class="meta"><span class="tag new">New</span><span class="tag">Long title</span></div>
+        <div class="price"><strong>$27.00</strong></div>
+      </div>
+    </article>
+
+    <article class="deal">
+      <a class="cover" href="https://www.bigw.com.au/product/mcobeauty-endless-summer-kit-no-3/p/6086899" aria-label="MCoBeauty Endless Summer Kit">
+        <span>MCO</span>
+      </a>
+      <div class="body">
+        <span class="eyebrow">Beauty</span>
+        <a class="title" href="https://www.bigw.com.au/product/mcobeauty-endless-summer-kit-no-3/p/6086899">MCoBeauty Endless Summer Kit — No. 3</a>
+        <div class="meta"><span class="tag sale">40% off RRP</span></div>
+        <div class="price"><strong>$15.00</strong> <s>$25.00</s></div>
+      </div>
+    </article>
+  </div>
+
+  <div class="plain">
+    A non-product BIG W link (no chip expected): <a href="https://www.bigw.com.au/delivery-pickup/standard-delivery">Standard delivery</a>.
+    The card below is inserted by JavaScript after two seconds — the badge and hover card must still work.
+  </div>
+
+  <div class="grid" id="dynamic" style="margin-top:16px"></div>
+
+  <footer>
+    <span>Duke chip demo · served from <code>scripts/chip-demo.ts</code></span>
+    <span>127.0.0.1 only · no data leaves this page</span>
+  </footer>
+</div>
+
+<script>
+  // A link added after load: the chip uses event delegation and the badge uses a
+  // CSS attribute selector, so both must work without a reload.
+  setTimeout(() => {
+    document.getElementById('dynamic').innerHTML = `
+      <article class="deal">
+        <a class="cover" href="https://www.bigw.com.au/product/threshing-day-limited-deluxe-edition/p/6090001" aria-label="Dynamic product">
+          <span>NEW</span>
+        </a>
+        <div class="body">
+          <span class="eyebrow">Added just now</span>
+          <a class="title" href="https://www.bigw.com.au/product/threshing-day-limited-deluxe-edition/p/6090001">Threshing Day — Limited Deluxe Edition</a>
+          <div class="meta"><span class="tag new">Dynamic link</span></div>
+          <div class="price"><strong>$39.00</strong></div>
+        </div>
+      </article>`;
+  }, 2000);
+</script>
+</body>
+</html>
